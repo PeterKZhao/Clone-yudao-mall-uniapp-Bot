@@ -2,7 +2,7 @@ name: Build Mini Program / Android / iOS
 
 on:
   push:
-    branches: [master]   # push 只自动触发小程序
+    branches: [master]
   workflow_dispatch:
     inputs:
       platforms:
@@ -51,15 +51,9 @@ jobs:
           echo "📌 @dcloudio resolved: ${VER}"
 
 # ─────────────────────────────────────────────────────────
-# 公共安装步骤（YAML anchor，各 Job 引用）
-# ─────────────────────────────────────────────────────────
-# 注意：GitHub Actions 不支持顶层 anchor，
-#       下方三个 Job 的安装步骤写法一致，各自独立展开。
-
-# ─────────────────────────────────────────────────────────
 # Job 1: 微信小程序
 # 触发：push to master ＋ workflow_dispatch (all / mp-weixin)
-# 产物：dist/build/mp-weixin/  → Artifact: mp-weixin-<sha>
+# 产物：dist/build/mp-weixin/ → Artifact: mp-weixin-<sha>
 # ─────────────────────────────────────────────────────────
   build-mp-weixin:
     needs: resolve-version
@@ -147,7 +141,6 @@ jobs:
   build-android:
     needs: resolve-version
     if: |
-      github.event_name == 'push' ||
       github.event.inputs.platforms == 'all' ||
       github.event.inputs.platforms == 'android'
     runs-on: ubuntu-latest
@@ -203,7 +196,39 @@ jobs:
           pnpm install --no-frozen-lockfile
 
       - name: Build app-plus (JS 层)
+        id: build_app
+        continue-on-error: true
         run: pnpm build:app-plus 2>&1 | tee build-app.log; exit ${PIPESTATUS[0]}
+
+      - name: Upload app-plus build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-appplus-logs-${{ github.sha }}
+          path: build-app.log
+          retention-days: 7
+
+      - name: Fail if app-plus build failed
+        if: steps.build_app.outcome == 'failure'
+        run: |
+          echo "❌ build:app-plus 失败，查看 Artifact: android-appplus-logs-${{ github.sha }}"
+          exit 1
+
+      - name: Verify & locate app dist
+        run: |
+          if [ -d "dist/build/app-plus" ]; then
+            echo "DIST_APP=dist/build/app-plus" >> $GITHUB_ENV
+            echo "✅ dist: dist/build/app-plus"
+          elif [ -d "dist/build/app" ]; then
+            echo "DIST_APP=dist/build/app" >> $GITHUB_ENV
+            echo "✅ dist: dist/build/app（回退）"
+          else
+            echo "❌ 找不到 app 编译产物，末尾日志如下："
+            tail -60 build-app.log || true
+            echo "── dist/ 目录结构 ──"
+            find dist -maxdepth 3 2>/dev/null || echo "(dist/ 不存在)"
+            exit 1
+          fi
 
       - name: Copy web assets → Android project
         run: |
@@ -213,7 +238,7 @@ jobs:
           ")
           DEST="native/android/app/src/main/assets/apps/${APPID}/www"
           mkdir -p "${DEST}"
-          cp -a dist/build/app-plus/. "${DEST}/"
+          cp -a "${DIST_APP}/." "${DEST}/"
           echo "✅ web assets → ${DEST}"
 
       - name: Decode keystore
@@ -239,14 +264,12 @@ jobs:
           path: native/android/app/build/outputs/apk/release/*.apk
           retention-days: 14
 
-      - name: Upload logs
+      - name: Upload Gradle logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-logs-${{ github.sha }}
-          path: |
-            build-app.log
-            build-gradle.log
+          name: android-gradle-logs-${{ github.sha }}
+          path: build-gradle.log
           retention-days: 7
 
 # ─────────────────────────────────────────────────────────
@@ -256,16 +279,15 @@ jobs:
 # 前置条件（需手动完成一次，之后全自动）：
 #   1. 用 HBuilderX 生成原生 iOS 工程，放入仓库 native/ios/
 #   2. 在 GitHub Secrets 中配置：
-#      IOS_CERTIFICATE_BASE64      — base64(Certificates.p12)
-#      IOS_CERTIFICATE_PASSWORD    — p12 导出密码
+#      IOS_CERTIFICATE_BASE64          — base64(Certificates.p12)
+#      IOS_CERTIFICATE_PASSWORD        — p12 导出密码
 #      IOS_PROVISIONING_PROFILE_BASE64 — base64(.mobileprovision)
-#      IOS_TEAM_ID                 — Apple Team ID (10位)
+#      IOS_TEAM_ID                     — Apple Team ID (10位)
 #   3. 修改下方 xcodebuild 中的 -scheme / -project 路径
 # ─────────────────────────────────────────────────────────
   build-ios:
     needs: resolve-version
     if: |
-      github.event_name == 'push' ||
       github.event.inputs.platforms == 'all' ||
       github.event.inputs.platforms == 'ios'
     runs-on: macos-latest
@@ -307,7 +329,39 @@ jobs:
           pnpm install --no-frozen-lockfile
 
       - name: Build app-plus (JS 层)
+        id: build_app
+        continue-on-error: true
         run: pnpm build:app-plus 2>&1 | tee build-app-ios.log; exit ${PIPESTATUS[0]}
+
+      - name: Upload app-plus build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-appplus-logs-${{ github.sha }}
+          path: build-app-ios.log
+          retention-days: 7
+
+      - name: Fail if app-plus build failed
+        if: steps.build_app.outcome == 'failure'
+        run: |
+          echo "❌ build:app-plus 失败，查看 Artifact: ios-appplus-logs-${{ github.sha }}"
+          exit 1
+
+      - name: Verify & locate app dist
+        run: |
+          if [ -d "dist/build/app-plus" ]; then
+            echo "DIST_APP=dist/build/app-plus" >> $GITHUB_ENV
+            echo "✅ dist: dist/build/app-plus"
+          elif [ -d "dist/build/app" ]; then
+            echo "DIST_APP=dist/build/app" >> $GITHUB_ENV
+            echo "✅ dist: dist/build/app（回退）"
+          else
+            echo "❌ 找不到 app 编译产物，末尾日志如下："
+            tail -60 build-app-ios.log || true
+            echo "── dist/ 目录结构 ──"
+            find dist -maxdepth 3 2>/dev/null || echo "(dist/ 不存在)"
+            exit 1
+          fi
 
       - name: Copy web assets → iOS project
         run: |
@@ -317,7 +371,7 @@ jobs:
           ")
           DEST="native/ios/HBuilder/HBuilder/Pandora/apps/${APPID}/www"
           mkdir -p "${DEST}"
-          cp -a dist/build/app-plus/. "${DEST}/"
+          cp -a "${DIST_APP}/." "${DEST}/"
           echo "✅ web assets → ${DEST}"
 
       - name: Install certificate & provisioning profile
@@ -385,7 +439,7 @@ jobs:
           path: ${{ runner.temp }}/ipa/*.ipa
           retention-days: 14
 
-      - name: Upload logs
+      - name: Upload iOS logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
