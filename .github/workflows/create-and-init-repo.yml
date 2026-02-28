@@ -1,0 +1,161 @@
+name: Create and init Vue3 UI repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: "要创建的新 GitHub 仓库名（例如: future-ui-admin-vue3）"
+        required: true
+        default: "future-ui-admin-vue3"
+      repo_description:
+        description: "仓库描述"
+        required: false
+        default: "Init from Gitee yudao-ui-admin-vue3"
+      private:
+        description: "是否创建为私有仓库 (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  create-and-init:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      GH_PAT: ${{ secrets.GH_PAT }}
+      OWNER: PeterKZhao
+      NEW_REPO: ${{ github.event.inputs.repo_name }}
+      REPO_DESC: ${{ github.event.inputs.repo_description }}
+      PRIVATE: ${{ github.event.inputs.private }}
+
+    steps:
+      - name: Checkout Clone-Bot
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: pip install -q -r tools/requirements.txt
+
+      - name: Delete existing repo if exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE="$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${OWNER}/${NEW_REPO}")"
+
+          if [ "${CODE}" = "200" ]; then
+            curl -sS -o /dev/null -X DELETE \
+              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${OWNER}/${NEW_REPO}"
+            sleep 3
+          fi
+
+      - name: Clone from Gitee
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q --depth=1 --single-branch \
+            https://gitee.com/yudaocode/yudao-ui-admin-vue3.git source
+
+          rm -rf source/.git source/.gitee source/.github \
+                 source/README.md source/README-zh_CN.md
+
+      - name: Replace text content
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd source && python3 ../tools/replace_all.py)
+
+      - name: Copy GitHub Pages workflow template
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source/.github/workflows
+          if [ ! -f "templates/workflows/pages.yml" ]; then
+            echo "ERROR: templates/workflows/pages.yml not found"
+            exit 1
+          fi
+          cp -f templates/workflows/pages.yml source/.github/workflows/pages.yml
+
+      - name: Prepare repo content
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p repo_content
+          cp -a source/. repo_content/
+          rm -rf source
+
+      - name: Create new GitHub repo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRIVATE_BOOL=$( [ "${PRIVATE}" = "true" ] && echo true || echo false )
+
+          RESP="$(curl -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user/repos \
+            -d "{
+              \"name\": \"${NEW_REPO}\",
+              \"description\": \"${REPO_DESC}\",
+              \"private\": ${PRIVATE_BOOL}
+            }")"
+
+          if ! echo "${RESP}" | grep -q '"full_name"'; then
+            echo "ERROR: Failed to create repo. Response: ${RESP}"
+            exit 1
+          fi
+
+          sleep 3
+
+      - name: Push to new repo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config --global credential.helper store
+          echo "https://${OWNER}:${GH_PAT}@github.com" > ~/.git-credentials
+
+          cd repo_content
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -q -m "Initial commit: 梦开始的地方"
+          git branch -M master
+          git remote add origin "https://github.com/${OWNER}/${NEW_REPO}.git"
+          git push -q -u origin master
+
+          rm -f ~/.git-credentials
+
+      - name: Wait for gh-pages branch and enable Pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "⏳ 等待 pages.yml 触发并生成 gh-pages 分支..."
+          for i in $(seq 1 20); do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${OWNER}/${NEW_REPO}/branches/gh-pages")
+            if [ "${CODE}" = "200" ]; then
+              echo "✅ gh-pages 分支已存在，启用 Pages..."
+              break
+            fi
+            echo "  第 ${i} 次检查，gh-pages 尚未就绪，等待 30s..."
+            sleep 30
+          done
+
+          curl -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${OWNER}/${NEW_REPO}/pages" \
+            -d '{"source": {"branch": "gh-pages", "path": "/"}}' \
+            || echo "⚠️ Pages 可能已启用，忽略此错误"
