@@ -3,7 +3,7 @@
 将 HBuilderX uni-app Vue3 项目转换为 CLI (Vite) 项目。
 在项目根目录执行，幂等，可安全重复运行。
 """
-import os, json, shutil
+import os, json, shutil, re
 
 ROOT_KEEP = {
     "vite.config.ts", "vite.config.js",
@@ -111,7 +111,7 @@ def fix_index_html():
 def create_vite_config():
     """
     优先保留原始 vite.config.js（含 ROUTES_MAP define、loadEnv 等），
-    仅将文件路径引用由根目录修正为 src/。
+    将所有相对路径引用由根目录修正为 src/（含自定义插件 import）。
     若无原始配置则创建标准模板。
     """
     patched = False
@@ -121,15 +121,24 @@ def create_vite_config():
         with open(cfg, "r", encoding="utf-8") as f:
             content = f.read()
         new_content = content
-        # inputDir 路径修正
+
+        # ── 固定字段路径修正 ──────────────────────────────────────────
         new_content = new_content.replace("inputDir: '.'",  "inputDir: 'src'")
         new_content = new_content.replace('inputDir: "."',  'inputDir: "src"')
-        # pages.json 路径修正
         new_content = new_content.replace("'./pages.json'",    "'./src/pages.json'")
         new_content = new_content.replace('"./pages.json"',    '"./src/pages.json"')
-        # manifest.json 路径修正
         new_content = new_content.replace("'./manifest.json'", "'./src/manifest.json'")
         new_content = new_content.replace('"./manifest.json"', '"./src/manifest.json"')
+
+        # ── 通用相对路径修正（import/require 指向已迁移至 src/ 的文件）──
+        # 匹配：from './foo'  |  from "./foo"
+        #       require('./foo')  |  require("./foo")
+        # 跳过：已经是 ./src/  |  npm 包（无 ./ 前缀）
+        new_content = re.sub(
+            r"""((?:from\s+|require\s*\(\s*)['"])\./((?!src/)(?!node_modules/))""",
+            r"\1./src/",
+            new_content,
+        )
 
         with open(cfg, "w", encoding="utf-8") as f:
             f.write(new_content)
