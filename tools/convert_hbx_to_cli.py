@@ -12,7 +12,6 @@ SRC_ITEMS = [
     "App.vue", "main.js", "main.ts",
     "pages.json", "manifest.json",
     "uni.scss", "uni.css",
-    "index.html",
 ]
 
 CLI_SCRIPTS = {
