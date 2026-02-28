@@ -138,3 +138,49 @@ jobs:
           git push -q -u origin master
 
           rm -f ~/.git-credentials
+
+      - name: Init gh-pages branch & enable GitHub Pages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config --global credential.helper store
+          echo "https://${OWNER}:${GH_PAT}@github.com" > ~/.git-credentials
+
+          # 1. 创建孤立 gh-pages 分支并推送占位页
+          #    （GitHub Pages API 要求分支必须先存在）
+          cd repo_content
+
+          git checkout --orphan gh-pages
+          git rm -rf . -q 2>/dev/null || true
+          mkdir -p .
+          echo '<html><body>Deploying, please wait...</body></html>' > index.html
+          git add index.html
+          git commit -q -m "Init gh-pages placeholder"
+          git push -q origin gh-pages
+          git checkout master
+
+          cd ..
+          rm -f ~/.git-credentials
+          echo "✅ gh-pages 占位分支已推送"
+          sleep 3
+
+          # 2. 调用 GitHub API 启用 Pages（源：gh-pages 分支根目录）
+          RESP="$(curl -sS \
+            -X POST \
+            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${OWNER}/${NEW_REPO}/pages" \
+            -d '{"source":{"branch":"gh-pages","path":"/"}}')"
+
+          if echo "${RESP}" | grep -q '"html_url"'; then
+            URL=$(echo "${RESP}" | node -e \
+              "let d='';process.stdin.on('data',c=>d+=c);
+               process.stdin.on('end',()=>console.log(JSON.parse(d).html_url))")
+            echo "✅ GitHub Pages 已启用: ${URL}"
+          elif echo "${RESP}" | grep -qi 'already\|exists'; then
+            echo "✅ GitHub Pages 已经启用，跳过"
+          else
+            echo "⚠️  Pages API 响应（非致命）: ${RESP}"
+          fi
