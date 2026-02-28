@@ -92,18 +92,27 @@ jobs:
 
           pnpm install --no-frozen-lockfile
 
+      - name: Ensure manifest.json is in src/
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "src/manifest.json" ]; then
+            echo "✅ src/manifest.json 已存在，跳过"
+          elif [ -f "manifest.json" ]; then
+            mkdir -p src
+            mv manifest.json src/manifest.json
+            echo "✅ manifest.json 已移至 src/manifest.json"
+          else
+            echo "❌ 找不到 manifest.json（根目录或 src/ 均无）"
+            exit 1
+          fi
+
       - name: Set H5 base path in manifest.json
         run: |
           REPO_NAME=$(basename $(git remote get-url origin) .git)
           echo "📦 仓库名: ${REPO_NAME}，设置 h5.router.base=/${REPO_NAME}/"
 
-          if [ -f "src/manifest.json" ]; then
-            MANIFEST_PATH="src/manifest.json"
-          elif [ -f "manifest.json" ]; then
-            MANIFEST_PATH="manifest.json"
-          else
-            echo "❌ 找不到 manifest.json"; exit 1
-          fi
+          MANIFEST_PATH="src/manifest.json"
 
           node -e "
           const fs = require('fs');
