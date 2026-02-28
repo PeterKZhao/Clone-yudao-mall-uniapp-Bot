@@ -125,43 +125,50 @@ jobs:
 
       - name: Build H5
         id: build
-        continue-on-error: true          # 构建失败不立即中止，先收集日志
+        continue-on-error: true
         run: |
           pnpm build:h5 2>&1 | tee build.log
-          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          # tee 不影响原始退出码，需手动传递
+          exit ${PIPESTATUS[0]}
 
-      - name: Collect project structure on failure
-        if: steps.build.outcome == 'failure'
+      - name: Collect logs & project info
+        if: always()                    # 无论成功失败都执行
         run: |
           mkdir -p build-logs
-          mv build.log build-logs/build.log
 
-          echo "===== package.json =====" >> build-logs/build.log
-          cat package.json               >> build-logs/build.log
+          # 构建输出
+          [ -f build.log ] && mv build.log build-logs/build.log \
+            || echo "(no build.log)" > build-logs/build.log
 
-          echo "===== src/ tree ======"  >> build-logs/build.log
-          find src -maxdepth 3 -not -path '*/node_modules/*' \
-            | sort                       >> build-logs/build.log
+          # 构建结果标记
+          echo "outcome: ${{ steps.build.outcome }}" > build-logs/outcome.txt
 
-          echo "===== vite.config =====" >> build-logs/build.log
-          cat vite.config.ts 2>/dev/null || cat vite.config.js 2>/dev/null \
-                                         >> build-logs/build.log || true
+          # package.json
+          cp package.json build-logs/package.json 2>/dev/null || true
 
-          echo "===== src/manifest.json =====" >> build-logs/build.log
-          cat src/manifest.json 2>/dev/null    >> build-logs/build.log || true
+          # src/ 目录树（最多 4 层）
+          find src -maxdepth 4 -not -path '*/node_modules/*' \
+            | sort > build-logs/src-tree.txt 2>/dev/null || true
+
+          # vite config
+          cp vite.config.ts build-logs/vite.config.ts 2>/dev/null \
+            || cp vite.config.js build-logs/vite.config.js 2>/dev/null || true
+
+          # manifest.json
+          cp src/manifest.json build-logs/manifest.json 2>/dev/null || true
 
       - name: Upload build logs
-        if: steps.build.outcome == 'failure'
+        if: always()                    # 无论成功失败都上传
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ github.sha }}
           path: build-logs/
-          retention-days: 7             # 保留 7 天，到期自动删除
+          retention-days: 7
 
-      - name: Fail job after log upload
+      - name: Fail job if build failed
         if: steps.build.outcome == 'failure'
         run: |
-          echo "❌ Build failed. 请下载上方 Artifacts 中的 build-logs 查看完整日志。"
+          echo "❌ Build failed，日志已上传至 Artifacts: build-logs-${{ github.sha }}"
           exit 1
 
       - name: Verify dist
