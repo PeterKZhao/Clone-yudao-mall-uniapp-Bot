@@ -40,10 +40,53 @@ jobs:
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-pnpm-
 
-      - name: Install dependencies
+      - name: Resolve @dcloudio version & install
         run: |
           npm config set registry https://registry.npmmirror.com
-          pnpm install
+
+          DCLOUDIO_VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
+            node -e "
+            let raw = '';
+            process.stdin.on('data', d => raw += d);
+            process.stdin.on('end', () => {
+              try {
+                const vs = JSON.parse(raw);
+                const dated = vs.filter(v => /^3\.0\.0-\d{13,}$/.test(v));
+                if (dated.length) {
+                  dated.sort((a, b) => {
+                    const na = BigInt(a.split('-')[1]);
+                    const nb = BigInt(b.split('-')[1]);
+                    return na < nb ? -1 : na > nb ? 1 : 0;
+                  });
+                  console.log(dated[dated.length - 1]);
+                } else {
+                  console.log('3.0.0-3090820231023001');
+                }
+              } catch(e) {
+                console.log('3.0.0-3090820231023001');
+              }
+            });
+            " || echo "3.0.0-3090820231023001")
+
+          echo "📌 @dcloudio resolved: ${DCLOUDIO_VER}"
+
+          node -e "
+          const fs = require('fs');
+          const ver = process.argv[1];
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          ['dependencies', 'devDependencies'].forEach(key => {
+            if (!pkg[key]) return;
+            Object.keys(pkg[key]).forEach(name => {
+              if (name.startsWith('@dcloudio/') && name !== '@dcloudio/types') {
+                pkg[key][name] = ver;
+              }
+            });
+          });
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          console.log('✅ package.json @dcloudio 版本已固定为:', ver);
+          " "${DCLOUDIO_VER}"
+
+          pnpm install --no-frozen-lockfile
 
       - name: Build WeChat Mini Program
         run: pnpm build:mp-weixin
@@ -102,10 +145,53 @@ jobs:
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-pnpm-
 
-      - name: Install dependencies
+      - name: Resolve @dcloudio version & install
         run: |
           npm config set registry https://registry.npmmirror.com
-          pnpm install
+
+          DCLOUDIO_VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
+            node -e "
+            let raw = '';
+            process.stdin.on('data', d => raw += d);
+            process.stdin.on('end', () => {
+              try {
+                const vs = JSON.parse(raw);
+                const dated = vs.filter(v => /^3\.0\.0-\d{13,}$/.test(v));
+                if (dated.length) {
+                  dated.sort((a, b) => {
+                    const na = BigInt(a.split('-')[1]);
+                    const nb = BigInt(b.split('-')[1]);
+                    return na < nb ? -1 : na > nb ? 1 : 0;
+                  });
+                  console.log(dated[dated.length - 1]);
+                } else {
+                  console.log('3.0.0-3090820231023001');
+                }
+              } catch(e) {
+                console.log('3.0.0-3090820231023001');
+              }
+            });
+            " || echo "3.0.0-3090820231023001")
+
+          echo "📌 @dcloudio resolved: ${DCLOUDIO_VER}"
+
+          node -e "
+          const fs = require('fs');
+          const ver = process.argv[1];
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          ['dependencies', 'devDependencies'].forEach(key => {
+            if (!pkg[key]) return;
+            Object.keys(pkg[key]).forEach(name => {
+              if (name.startsWith('@dcloudio/') && name !== '@dcloudio/types') {
+                pkg[key][name] = ver;
+              }
+            });
+          });
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          console.log('✅ package.json @dcloudio 版本已固定为:', ver);
+          " "${DCLOUDIO_VER}"
+
+          pnpm install --no-frozen-lockfile
 
       - name: Build App resources
         run: pnpm build:app
@@ -118,17 +204,12 @@ jobs:
           echo "✅ App 资源构建成功"
           ls -lh dist/build/app/
 
-      # 无论是否配置离线 SDK，始终上传 app 资源供本地 HBuilderX 离线打包使用
       - uses: actions/upload-artifact@v4
         with:
           name: app-resources-${{ github.sha }}
           path: dist/build/app/
           retention-days: 7
 
-      # ── 以下步骤需配置 secret: DCLOUD_ANDROID_SDK_URL ───────────────────────
-      # 请将 DCloud Android 离线打包 SDK zip 上传到可访问的 URL 后配置该 secret
-      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/android.html
-      # ────────────────────────────────────────────────────────────────────────
       - name: Download DCloud Android offline SDK
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
@@ -136,26 +217,24 @@ jobs:
           curl -L -o android-sdk.zip "${{ env.DCLOUD_ANDROID_SDK_URL }}"
           unzip -q android-sdk.zip -d android-sdk
           echo "✅ SDK 解压完成"
-          ls android-sdk/
 
       - name: Configure AppKey & copy app resources
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
           APP_ID=$(python3 -c "
-          import json
-          d = json.load(open('src/manifest.json') if __import__('os').path.exists('src/manifest.json') else open('manifest.json'))
+          import json, os
+          p = 'src/manifest.json' if os.path.exists('src/manifest.json') else 'manifest.json'
+          d = json.load(open(p))
           print(d.get('appid', '__UNI__APPID'))
           ")
           echo "🆔 AppID: ${APP_ID}"
-
           SIMPLEDEMOSRC="android-sdk/HBuilder-Integrate-AS/simpleDemo/src/main"
           WWW_DIR="${SIMPLEDEMOSRC}/assets/apps/${APP_ID}/www"
           mkdir -p "${WWW_DIR}"
           cp -r dist/build/app/. "${WWW_DIR}/"
-          echo "✅ App 资源已复制"
-
           CTRL="${SIMPLEDEMOSRC}/assets/data/dcloud_control.xml"
           [ -f "${CTRL}" ] && sed -i "s/__APPKEY__/${{ env.DCLOUD_APPKEY }}/g" "${CTRL}"
+          echo "✅ App 资源已复制"
 
       - name: Setup signing keystore
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
@@ -233,10 +312,53 @@ jobs:
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-pnpm-
 
-      - name: Install dependencies
+      - name: Resolve @dcloudio version & install
         run: |
           npm config set registry https://registry.npmmirror.com
-          pnpm install
+
+          DCLOUDIO_VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
+            node -e "
+            let raw = '';
+            process.stdin.on('data', d => raw += d);
+            process.stdin.on('end', () => {
+              try {
+                const vs = JSON.parse(raw);
+                const dated = vs.filter(v => /^3\.0\.0-\d{13,}$/.test(v));
+                if (dated.length) {
+                  dated.sort((a, b) => {
+                    const na = BigInt(a.split('-')[1]);
+                    const nb = BigInt(b.split('-')[1]);
+                    return na < nb ? -1 : na > nb ? 1 : 0;
+                  });
+                  console.log(dated[dated.length - 1]);
+                } else {
+                  console.log('3.0.0-3090820231023001');
+                }
+              } catch(e) {
+                console.log('3.0.0-3090820231023001');
+              }
+            });
+            " || echo "3.0.0-3090820231023001")
+
+          echo "📌 @dcloudio resolved: ${DCLOUDIO_VER}"
+
+          node -e "
+          const fs = require('fs');
+          const ver = process.argv[1];
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          ['dependencies', 'devDependencies'].forEach(key => {
+            if (!pkg[key]) return;
+            Object.keys(pkg[key]).forEach(name => {
+              if (name.startsWith('@dcloudio/') && name !== '@dcloudio/types') {
+                pkg[key][name] = ver;
+              }
+            });
+          });
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          console.log('✅ package.json @dcloudio 版本已固定为:', ver);
+          " "${DCLOUDIO_VER}"
+
+          pnpm install --no-frozen-lockfile
 
       - name: Build App resources
         run: pnpm build:app
@@ -248,16 +370,12 @@ jobs:
           fi
           echo "✅ App 资源构建成功"
 
-      # 始终上传 app 资源
       - uses: actions/upload-artifact@v4
         with:
           name: app-resources-ios-${{ github.sha }}
           path: dist/build/app/
           retention-days: 7
 
-      # ── 以下步骤需配置 DCLOUD_IOS_SDK_URL + IOS_* secrets ───────────────────
-      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/ios.html
-      # ────────────────────────────────────────────────────────────────────────
       - name: Download DCloud iOS offline SDK
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' }}
         run: |
@@ -275,11 +393,10 @@ jobs:
           print(d.get('appid', '__UNI__APPID'))
           ")
           echo "🆔 AppID: ${APP_ID}"
-
           IOS_WWW="ios-sdk/HBuilder-Hello/HBuilder-Hello/Pandora/apps/${APP_ID}/www"
           mkdir -p "${IOS_WWW}"
           cp -r dist/build/app/. "${IOS_WWW}/"
-          echo "✅ App 资源已复制到 iOS 项目"
+          echo "✅ App 资源已复制"
 
       - name: Import certificate & provisioning profile
         if: ${{ env.IOS_CERTIFICATE_BASE64 != '' }}
@@ -297,10 +414,9 @@ jobs:
           security import "$CERT_PATH" -P "${{ env.IOS_CERTIFICATE_PASSWORD }}" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
-
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
-          echo "✅ 证书和描述文件导入完成"
+          echo "✅ 证书导入完成"
 
       - name: Build & archive
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
