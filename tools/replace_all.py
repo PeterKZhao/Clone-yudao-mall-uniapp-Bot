@@ -1,36 +1,48 @@
 #!/usr/bin/env python3
 """
 Replace brand names and API URLs in all text files under current directory.
+Tuned for yudao-mall-uniapp migration.
 """
 import os
-import re
 
-# 替换规则（顺序很重要：长词/大小写精确匹配优先）
+# 替换规则（顺序很重要：长词 / 精确 URL 优先，防止被后续规则破坏）
 REPLACEMENTS = [
-    # ✅ URL 替换必须放最前面（精确匹配，避免被后面的通用规则破坏）
-    ("http://api-dashboard.yudao.iocoder.cn",  "https://shanxigaokaozixun.com"),
-    ("http://mall.yudao.iocoder.cn",           "https://shanxigaokaozixun.com"),
-    ("http://localhost:48080",           "https://shanxigaokaozixun.com"),
-    ("http://127.0.0.1:3000",           "http://114.55.24.12:3000"),
-    # 品牌名替换（大写/长词优先）
-    ("RuoYi",  "Future"),
-    ("Ruoyi",  "Future"),
-    ("ruoyi",  "future"),
-    ("Yudao",  "Future"),
-    ("yudao",  "future"),
+    # ── API 地址替换 ─────────────────────────────────────────────────────────
+    # mall 项目默认后端地址
+    ("http://api-dashboard.yudao.iocoder.cn",   "https://shanxigaokaozixun.com"),
+    ("http://mall.yudao.iocoder.cn",            "https://shanxigaokaozixun.com"),
+    ("http://localhost:48080",                  "https://shanxigaokaozixun.com"),
+    ("http://127.0.0.1:48080",                  "https://shanxigaokaozixun.com"),
+    ("http://127.0.0.1:3000",                   "http://114.55.24.12:3000"),
+    # uniapp 默认请求前缀（manifest.json / request.js 中可能出现）
+    ("https://api.iocoder.cn",                  "https://shanxigaokaozixun.com"),
+
+    # ── 品牌名替换（长词 / 大写优先）────────────────────────────────────────
+    ("芋道商城",   "Future 商城"),
+    ("芋道源码",   "Future"),
+    ("芋道",       "Future"),
+    ("RuoYi",      "Future"),
+    ("Ruoyi",      "Future"),
+    ("ruoyi",      "future"),
+    ("Yudao",      "Future"),
+    ("yudao",      "future"),
+    # 小程序 AppID 占位（manifest.json 中按需替换）
+    # ("wxXXXXXXXXXXXXXXXX",  "wx你的真实AppID"),
 ]
 
-# 需要跳过的二进制/不可处理文件后缀
+# 跳过的二进制 / 锁文件后缀
 SKIP_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp",
     ".woff", ".woff2", ".ttf", ".eot",
-    ".zip", ".tar", ".gz",
+    ".zip", ".tar", ".gz", ".rar",
     ".jar", ".class",
-    ".lock",          # package-lock.json / yarn.lock 可视需求决定是否跳过
+    ".mp3", ".mp4", ".wav",
+    ".lock",
 }
 
-# 需要跳过的目录
-SKIP_DIRS = {"node_modules", ".git", "dist", ".cache"}
+# 跳过的目录
+SKIP_DIRS = {"node_modules", ".git", "dist", ".cache", "unpackage"}
 
 
 def process_file(path: str) -> None:
@@ -41,7 +53,7 @@ def process_file(path: str) -> None:
         with open(path, "r", encoding="utf-8", errors="strict") as f:
             content = f.read()
     except (UnicodeDecodeError, PermissionError):
-        return  # 跳过二进制或无权限文件
+        return
 
     new_content = content
     for old, new in REPLACEMENTS:
@@ -56,7 +68,6 @@ def process_file(path: str) -> None:
 def main():
     root = os.getcwd()
     for dirpath, dirnames, filenames in os.walk(root):
-        # 原地修改 dirnames 以跳过指定目录
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for filename in filenames:
             process_file(os.path.join(dirpath, filename))
