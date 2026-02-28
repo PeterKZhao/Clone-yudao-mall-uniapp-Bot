@@ -23,22 +23,20 @@ CLI_SCRIPTS = {
     "build:mp-weixin": "uni build -p mp-weixin",
     "dev:app":         "uni -p app",
     "build:app":       "uni build -p app",
-    # 兼容旧版命名
     "build:app-plus":  "uni build -p app-plus",
 }
 
-# >=3.0.0-0 允许匹配 DCloud 日期格式预发版本（如 3.0.0-4090820240930001）
-DCLOUDIO_VERSION = ">=3.0.0-0 <4.0.0"
-
+# CI 安装前会动态解析真实版本，这里用 * 占位
+# 真实版本格式: 3.0.0-3090820231023001（由 pages.yml/build-uniapp.yml 动态注入）
 CLI_DEPS = {
-    "@dcloudio/uni-app": DCLOUDIO_VERSION,
+    "@dcloudio/uni-app": "*",
 }
 
 CLI_DEV_DEPS = {
-    "@dcloudio/vite-plugin-uni": DCLOUDIO_VERSION,
-    "@dcloudio/uni-h5":          DCLOUDIO_VERSION,
-    "@dcloudio/uni-mp-weixin":   DCLOUDIO_VERSION,
-    "@dcloudio/uni-app-plus":    DCLOUDIO_VERSION,
+    "@dcloudio/vite-plugin-uni": "*",
+    "@dcloudio/uni-h5":          "*",
+    "@dcloudio/uni-mp-weixin":   "*",
+    "@dcloudio/uni-app-plus":    "*",
     "@dcloudio/types":           "*",
     "vite":                      "^5.2.8",
     "typescript":                "^5.2.0",
@@ -53,7 +51,7 @@ export default defineConfig({
 })
 """
 
-# pnpm 配置：关闭严格 peer-deps 防止 @dcloudio 包版本冲突
+# pnpm 配置：关闭严格 peer-deps，防止 @dcloudio 包版本冲突
 NPMRC = """\
 strict-peer-dependencies=false
 shamefully-hoist=true
@@ -61,7 +59,6 @@ shamefully-hoist=true
 
 
 def is_cli_project() -> bool:
-    """判断是否已经是 CLI 项目"""
     return (
         os.path.exists("vite.config.ts")
         or os.path.exists("vite.config.js")
