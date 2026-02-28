@@ -75,24 +75,6 @@ jobs:
           set -euo pipefail
           (cd source && python3 ../tools/replace_all.py)
 
-      - name: Create default .env if missing
-        shell: bash
-        run: |
-          set -euo pipefail
-          # shopro 需要 .env 提供运行时配置，Gitee 源通常不提交此文件
-          if [ ! -f "source/.env" ]; then
-            cat > source/.env << 'EOF'
-              # API 基础地址（replace_all.py 已替换为目标域名，此处与之保持一致）
-              VITE_SERVER_BASEURL=https://shanxigaokaozixun.com
-              VITE_APP_TITLE=Future 商城
-              VITE_APP_PROXY=false
-              EOF
-            echo "✅ 已创建默认 .env"
-          else
-            echo "✅ .env 已存在，跳过"
-          fi
-
-
       - name: Copy workflow templates
         shell: bash
         run: |
