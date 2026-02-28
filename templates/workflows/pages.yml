@@ -41,18 +41,62 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-
 
-      - name: Install dependencies
+      - name: Resolve @dcloudio version & install
         run: |
           npm config set registry https://registry.npmmirror.com
-          # strict-peer-dependencies=false 已在 .npmrc 中配置
-          pnpm install
+
+          # npm latest 标签错误指向 2021 年的 alpha 残缺版本
+          # 必须手动查询所有版本，过滤出日期格式的真实可用版本（3.0.0-<13位纯数字>）
+          DCLOUDIO_VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
+            node -e "
+            let raw = '';
+            process.stdin.on('data', d => raw += d);
+            process.stdin.on('end', () => {
+              try {
+                const vs = JSON.parse(raw);
+                const dated = vs.filter(v => /^3\.0\.0-\d{13,}$/.test(v));
+                if (dated.length) {
+                  dated.sort((a, b) => {
+                    const na = BigInt(a.split('-')[1]);
+                    const nb = BigInt(b.split('-')[1]);
+                    return na < nb ? -1 : na > nb ? 1 : 0;
+                  });
+                  console.log(dated[dated.length - 1]);
+                } else {
+                  console.log('3.0.0-3090820231023001');
+                }
+              } catch(e) {
+                console.log('3.0.0-3090820231023001');
+              }
+            });
+            " || echo "3.0.0-3090820231023001")
+
+          echo "📌 @dcloudio resolved: ${DCLOUDIO_VER}"
+
+          # 将 package.json 中所有 @dcloudio/*（types 除外）替换为精确版本
+          node -e "
+          const fs = require('fs');
+          const ver = process.argv[1];
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          ['dependencies', 'devDependencies'].forEach(key => {
+            if (!pkg[key]) return;
+            Object.keys(pkg[key]).forEach(name => {
+              if (name.startsWith('@dcloudio/') && name !== '@dcloudio/types') {
+                pkg[key][name] = ver;
+              }
+            });
+          });
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          console.log('✅ package.json @dcloudio 版本已固定为:', ver);
+          " "${DCLOUDIO_VER}"
+
+          pnpm install --no-frozen-lockfile
 
       - name: Set H5 base path in manifest.json
         run: |
           REPO_NAME=$(basename $(git remote get-url origin) .git)
           echo "📦 仓库名: ${REPO_NAME}，设置 h5.router.base=/${REPO_NAME}/"
 
-          # 兼容 CLI 项目（src/manifest.json）和 HBuilderX 项目（manifest.json）
           if [ -f "src/manifest.json" ]; then
             MANIFEST_PATH="src/manifest.json"
           elif [ -f "manifest.json" ]; then
@@ -63,14 +107,15 @@ jobs:
 
           node -e "
           const fs = require('fs');
-          const p = '${MANIFEST_PATH}';
+          const p = process.argv[1];
+          const repoName = process.argv[2];
           const m = JSON.parse(fs.readFileSync(p, 'utf8'));
           m.h5 = m.h5 || {};
           m.h5.router = m.h5.router || {};
-          m.h5.router.base = '/${REPO_NAME}/';
+          m.h5.router.base = '/' + repoName + '/';
           fs.writeFileSync(p, JSON.stringify(m, null, 2));
-          console.log('✅ manifest.json 已更新:', JSON.stringify(m.h5.router));
-          "
+          console.log('✅ h5.router.base =', m.h5.router.base);
+          " "${MANIFEST_PATH}" "${REPO_NAME}"
 
       - name: Build H5
         run: pnpm build:h5
