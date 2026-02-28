@@ -1,4 +1,4 @@
-name: Build and Deploy to GitHub Pages
+name: Build H5 and Deploy to GitHub Pages
 
 on:
   push:
@@ -19,10 +19,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 18
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -46,21 +46,20 @@ jobs:
           npm config set registry https://registry.npmmirror.com
           pnpm install
 
-      - name: Build
+      - name: Build H5
         run: |
           REPO_NAME=$(basename $(git remote get-url origin) .git)
-          echo "📦 仓库名: ${REPO_NAME}，设置 VITE_BASE_PATH=/${REPO_NAME}/"
-          VITE_OUT_DIR=dist \
-          VITE_BASE_PATH=/${REPO_NAME}/ \
-          pnpm build:prod
+          echo "📦 仓库名: ${REPO_NAME}，设置 H5 base path=/${REPO_NAME}/"
+          UNI_H5_BASE=/${REPO_NAME}/ pnpm build:h5
 
       - name: Verify dist
         run: |
-          if [ -d "dist" ]; then
-            echo "✅ dist 目录存在"
-            ls -lh dist/
+          DIST_DIR="dist/build/h5"
+          if [ -d "${DIST_DIR}" ]; then
+            echo "✅ ${DIST_DIR} 目录存在"
+            ls -lh "${DIST_DIR}/"
           else
-            echo "❌ dist 目录未找到，编译失败"
+            echo "❌ ${DIST_DIR} 未找到，H5 编译失败"
             exit 1
           fi
 
@@ -68,6 +67,6 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
+          publish_dir: ./dist/build/h5
           publish_branch: gh-pages
-          commit_message: "Deploy: ${{ github.sha }}"
+          commit_message: "Deploy H5: ${{ github.sha }}"
