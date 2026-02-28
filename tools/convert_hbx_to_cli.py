@@ -5,16 +5,25 @@
 """
 import os, json, shutil
 
-# HBuilderX 项目中属于"业务源码"的文件/目录 → 移入 src/
-# 注意：index.html 是 Vite 构建入口，必须留在根目录，不能移入 src/
-SRC_ITEMS = [
-    "pages", "components", "static", "store", "stores",
-    "utils", "api", "hooks", "types", "assets", "locale",
-    "uni_modules", "hybrid",
-    "App.vue", "main.js", "main.ts",
-    "pages.json", "manifest.json",
-    "uni.scss", "uni.css",
-]
+# 必须留在项目根目录的文件/目录（黑名单），其余全部移入 src/
+ROOT_KEEP = {
+    # Vite / Node 工程配置
+    "vite.config.ts", "vite.config.js",
+    "tsconfig.json", "tsconfig.node.json",
+    "package.json", "package-lock.json",
+    "pnpm-lock.yaml", "yarn.lock",
+    ".npmrc", ".nvmrc", ".node-version",
+    # Vite HTML 入口
+    "index.html",
+    # Git / CI
+    ".git", ".gitignore", ".gitattributes",
+    ".github", ".gitee",
+    # 依赖与产物
+    "node_modules", "dist", "unpackage",
+    # 其他工程根配置
+    ".env", ".env.local", ".env.development", ".env.production",
+    "README.md", "LICENSE",
+}
 
 CLI_SCRIPTS = {
     "dev:h5":          "uni",
@@ -26,8 +35,6 @@ CLI_SCRIPTS = {
     "build:app-plus":  "uni build -p app-plus",
 }
 
-# CI 安装前会动态解析真实版本，这里用 * 占位
-# 真实版本格式: 3.0.0-3090820231023001（由 pages.yml 动态注入）
 CLI_DEPS = {
     "@dcloudio/uni-app": "*",
 }
@@ -40,7 +47,7 @@ CLI_DEV_DEPS = {
     "@dcloudio/types":           "*",
     "vite":                      "^5.2.8",
     "typescript":                "^5.2.0",
-    "vue":                       "^3.4.0",   # CLI 必须显式声明，HBuilderX 由 IDE 内置
+    "vue":                       "^3.4.0",
 }
 
 VITE_CONFIG = """\
@@ -63,7 +70,6 @@ def is_cli_project() -> bool:
     必须同时满足：
     1. 有 vite config（vite.config.ts 或 .js）
     2. src/ 下已有 manifest.json 或 pages.json
-    防止"原项目带 vite.config.js 但文件仍在根目录"时误判跳过迁移。
     """
     has_vite = (
         os.path.exists("vite.config.ts")
@@ -77,9 +83,16 @@ def is_cli_project() -> bool:
 
 
 def move_to_src():
+    """
+    黑名单策略：根目录下所有不在 ROOT_KEEP 中的文件/目录，
+    全部移入 src/，无需逐一枚举业务目录。
+    """
     os.makedirs("src", exist_ok=True)
-    for item in SRC_ITEMS:
-        if not os.path.exists(item):
+    for item in sorted(os.listdir(".")):
+        if item in ROOT_KEEP or item == "src":
+            continue
+        # 跳过隐藏文件（.开头但不在黑名单里的，如 .eslintrc 等保留在根目录）
+        if item.startswith("."):
             continue
         dest = os.path.join("src", item)
         if os.path.exists(dest):
@@ -91,8 +104,8 @@ def move_to_src():
 
 def fix_index_html():
     """
-    index.html 留在根目录（Vite 入口要求），
-    但其中引用的 main.js/main.ts 已移入 src/，需修正路径。
+    index.html 留在根目录，但其中引用的 main.js/main.ts 已移入 src/，
+    需修正路径。
     例: src="/main.js"  →  src="/src/main.js"
         src="./main.js" →  src="./src/main.js"
     """
@@ -105,10 +118,8 @@ def fix_index_html():
 
     new_content = content
     for entry in ("main.ts", "main.js"):
-        # 绝对路径: /main.ts → /src/main.ts
-        new_content = new_content.replace(f'"/{entry}"', f'"/src/{entry}"')
-        new_content = new_content.replace(f"'/{entry}'", f"'/src/{entry}'")
-        # 相对路径: ./main.ts → ./src/main.ts
+        new_content = new_content.replace(f'"/{entry}"',  f'"/src/{entry}"')
+        new_content = new_content.replace(f"'/{entry}'",  f"'/src/{entry}'")
         new_content = new_content.replace(f'"./{entry}"', f'"./src/{entry}"')
         new_content = new_content.replace(f"'./{entry}'", f"'./src/{entry}'")
 
@@ -121,8 +132,7 @@ def fix_index_html():
 
 
 def create_vite_config():
-    # 强制删除旧的 vite.config.js/.ts
-    # 原始项目的 vite.config.js 可能指向根目录，与迁移后的 src/ 结构不符
+    # 强制删除旧的 vite.config.js/.ts，原始配置可能指向根目录
     for old_cfg in ("vite.config.js", "vite.config.ts"):
         if os.path.exists(old_cfg):
             os.remove(old_cfg)
@@ -147,13 +157,11 @@ def update_package_json():
     else:
         pkg = {"name": "future-mall-uniapp", "version": "1.0.0", "private": True}
 
-    # 仅在缺失时补充 CLI scripts，不覆盖已有脚本
     existing = pkg.get("scripts", {})
     for k, v in CLI_SCRIPTS.items():
         existing.setdefault(k, v)
     pkg["scripts"] = existing
 
-    # 合并依赖（不删除项目已有依赖）
     pkg.setdefault("dependencies", {}).update(CLI_DEPS)
     pkg.setdefault("devDependencies", {}).update(CLI_DEV_DEPS)
 
@@ -163,7 +171,6 @@ def update_package_json():
 
 
 def verify_src_manifest():
-    """转换完成后校验 src/manifest.json 必须存在，否则终止。"""
     if not os.path.exists("src/manifest.json"):
         raise FileNotFoundError(
             "❌ 转换后 src/manifest.json 仍不存在！"
@@ -182,8 +189,8 @@ def main():
 
     print("🔄 开始 HBuilderX → CLI 项目转换...")
     move_to_src()
-    fix_index_html()      # 修正 index.html 中的入口引用路径
-    create_vite_config()  # 强制覆盖，确保 inputDir 默认指向 src/
+    fix_index_html()
+    create_vite_config()
     create_npmrc()
     update_package_json()
     verify_src_manifest()
