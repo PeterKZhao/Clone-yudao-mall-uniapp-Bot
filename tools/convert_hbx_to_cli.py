@@ -43,7 +43,7 @@ CLI_EXTRA_DEV_DEPS = {
     "vite":                      "^5.2.8",
     "typescript":                "^5.2.0",
     "vue":                       "^3.4.0",
-    "sass-embedded":             "^1.69.0",
+    "sass-embedded":             "^1.77.0",
 }
 
 VITE_CONFIG = """\
