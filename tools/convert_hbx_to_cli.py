@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""
+将 HBuilderX uni-app Vue3 项目转换为 CLI (Vite) 项目。
+在项目根目录执行，幂等，可安全重复运行。
+"""
+import os, json, shutil
+
+# HBuilderX 项目中属于"业务源码"的文件/目录 → 移入 src/
+SRC_ITEMS = [
+    "pages", "components", "static", "store", "stores",
+    "utils", "api", "hooks", "types", "assets", "locale",
+    "uni_modules", "hybrid",
+    "App.vue", "main.js", "main.ts",
+    "pages.json", "manifest.json",
+    "uni.scss", "uni.css",
+    "index.html",
+]
+
+CLI_SCRIPTS = {
+    "dev:h5":          "uni",
+    "build:h5":        "uni build",
+    "dev:mp-weixin":   "uni -p mp-weixin",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "dev:app":         "uni -p app",
+    "build:app":       "uni build -p app",
+    # 兼容旧版命名
+    "build:app-plus":  "uni build -p app-plus",
+}
+
+# >=3.0.0-0 允许匹配 DCloud 日期格式预发版本（如 3.0.0-4090820240930001）
+DCLOUDIO_VERSION = ">=3.0.0-0 <4.0.0"
+
+CLI_DEPS = {
+    "@dcloudio/uni-app": DCLOUDIO_VERSION,
+}
+
+CLI_DEV_DEPS = {
+    "@dcloudio/vite-plugin-uni": DCLOUDIO_VERSION,
+    "@dcloudio/uni-h5":          DCLOUDIO_VERSION,
+    "@dcloudio/uni-mp-weixin":   DCLOUDIO_VERSION,
+    "@dcloudio/uni-app-plus":    DCLOUDIO_VERSION,
+    "@dcloudio/types":           "*",
+    "vite":                      "^5.2.8",
+    "typescript":                "^5.2.0",
+}
+
+VITE_CONFIG = """\
+import { defineConfig } from 'vite'
+import uni from '@dcloudio/vite-plugin-uni'
+
+export default defineConfig({
+  plugins: [uni()],
+})
+"""
+
+# pnpm 配置：关闭严格 peer-deps 防止 @dcloudio 包版本冲突
+NPMRC = """\
+strict-peer-dependencies=false
+shamefully-hoist=true
+"""
+
+
+def is_cli_project() -> bool:
+    """判断是否已经是 CLI 项目"""
+    return (
+        os.path.exists("vite.config.ts")
+        or os.path.exists("vite.config.js")
+        or os.path.exists("src/pages.json")
+    )
+
+
+def move_to_src():
+    os.makedirs("src", exist_ok=True)
+    for item in SRC_ITEMS:
+        if not os.path.exists(item):
+            continue
+        dest = os.path.join("src", item)
+        if os.path.exists(dest):
+            print(f"  [skip]  {item}（src/ 中已存在）")
+            continue
+        shutil.move(item, dest)
+        print(f"  [moved] {item} → src/{item}")
+
+
+def create_vite_config():
+    for cfg in ("vite.config.ts", "vite.config.js"):
+        if os.path.exists(cfg):
+            print(f"  [skip]  {cfg}（已存在）")
+            return
+    with open("vite.config.ts", "w", encoding="utf-8") as f:
+        f.write(VITE_CONFIG)
+    print("  [created] vite.config.ts")
+
+
+def create_npmrc():
+    if not os.path.exists(".npmrc"):
+        with open(".npmrc", "w", encoding="utf-8") as f:
+            f.write(NPMRC)
+        print("  [created] .npmrc")
+
+
+def update_package_json():
+    pkg_path = "package.json"
+    if os.path.exists(pkg_path):
+        with open(pkg_path, "r", encoding="utf-8") as f:
+            pkg = json.load(f)
+    else:
+        pkg = {"name": "future-mall-uniapp", "version": "1.0.0", "private": True}
+
+    # 仅在缺失时补充 CLI scripts，不覆盖已有脚本
+    existing = pkg.get("scripts", {})
+    for k, v in CLI_SCRIPTS.items():
+        existing.setdefault(k, v)
+    pkg["scripts"] = existing
+
+    # 合并依赖（不删除项目已有依赖）
+    pkg.setdefault("dependencies", {}).update(CLI_DEPS)
+    pkg.setdefault("devDependencies", {}).update(CLI_DEV_DEPS)
+
+    with open(pkg_path, "w", encoding="utf-8") as f:
+        json.dump(pkg, f, ensure_ascii=False, indent=2)
+    print("  [updated] package.json")
+
+
+def main():
+    if is_cli_project():
+        print("✅ 已是 CLI 项目，跳过文件迁移，仅补充 scripts/依赖...")
+        update_package_json()
+        create_npmrc()
+        return
+
+    print("🔄 开始 HBuilderX → CLI 项目转换...")
+    move_to_src()
+    create_vite_config()
+    create_npmrc()
+    update_package_json()
+    print("✅ 转换完成！源码已迁移至 src/")
+
+
+if __name__ == "__main__":
+    main()
