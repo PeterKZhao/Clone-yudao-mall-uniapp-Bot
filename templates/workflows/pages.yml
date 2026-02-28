@@ -44,13 +44,36 @@ jobs:
       - name: Install dependencies
         run: |
           npm config set registry https://registry.npmmirror.com
+          # strict-peer-dependencies=false 已在 .npmrc 中配置
           pnpm install
 
-      - name: Build H5
+      - name: Set H5 base path in manifest.json
         run: |
           REPO_NAME=$(basename $(git remote get-url origin) .git)
-          echo "📦 仓库名: ${REPO_NAME}，设置 H5 base path=/${REPO_NAME}/"
-          UNI_H5_BASE=/${REPO_NAME}/ pnpm build:h5
+          echo "📦 仓库名: ${REPO_NAME}，设置 h5.router.base=/${REPO_NAME}/"
+
+          # 兼容 CLI 项目（src/manifest.json）和 HBuilderX 项目（manifest.json）
+          if [ -f "src/manifest.json" ]; then
+            MANIFEST_PATH="src/manifest.json"
+          elif [ -f "manifest.json" ]; then
+            MANIFEST_PATH="manifest.json"
+          else
+            echo "❌ 找不到 manifest.json"; exit 1
+          fi
+
+          node -e "
+          const fs = require('fs');
+          const p = '${MANIFEST_PATH}';
+          const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+          m.h5 = m.h5 || {};
+          m.h5.router = m.h5.router || {};
+          m.h5.router.base = '/${REPO_NAME}/';
+          fs.writeFileSync(p, JSON.stringify(m, null, 2));
+          console.log('✅ manifest.json 已更新:', JSON.stringify(m.h5.router));
+          "
+
+      - name: Build H5
+        run: pnpm build:h5
 
       - name: Verify dist
         run: |
