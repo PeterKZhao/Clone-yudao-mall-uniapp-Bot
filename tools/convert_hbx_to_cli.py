@@ -5,7 +5,6 @@
 """
 import os, json, shutil
 
-# 必须留在项目根目录的文件/目录（黑名单），其余全部移入 src/
 ROOT_KEEP = {
     "vite.config.ts", "vite.config.js",
     "tsconfig.json", "tsconfig.node.json",
@@ -46,6 +45,7 @@ CLI_EXTRA_DEV_DEPS = {
     "sass":                      "^1.77.0",
 }
 
+# 仅在原项目无 vite.config 时使用此模板
 VITE_CONFIG = """\
 import { defineConfig } from 'vite'
 import uni from '@dcloudio/vite-plugin-uni'
@@ -92,17 +92,14 @@ def fix_index_html():
     if not os.path.exists("index.html"):
         print("  [skip]  index.html 不存在")
         return
-
     with open("index.html", "r", encoding="utf-8") as f:
         content = f.read()
-
     new_content = content
     for entry in ("main.ts", "main.js"):
         new_content = new_content.replace(f'"/{entry}"',  f'"/src/{entry}"')
         new_content = new_content.replace(f"'/{entry}'",  f"'/src/{entry}'")
         new_content = new_content.replace(f'"./{entry}"', f'"./src/{entry}"')
         new_content = new_content.replace(f"'./{entry}'", f"'./src/{entry}'")
-
     if new_content != content:
         with open("index.html", "w", encoding="utf-8") as f:
             f.write(new_content)
@@ -112,13 +109,41 @@ def fix_index_html():
 
 
 def create_vite_config():
-    for old_cfg in ("vite.config.js", "vite.config.ts"):
-        if os.path.exists(old_cfg):
-            os.remove(old_cfg)
-            print(f"  [removed] {old_cfg}（替换为标准 CLI 配置）")
-    with open("vite.config.ts", "w", encoding="utf-8") as f:
-        f.write(VITE_CONFIG)
-    print("  [created] vite.config.ts")
+    """
+    优先保留原始 vite.config.js（含 ROUTES_MAP define、loadEnv 等），
+    仅将文件路径引用由根目录修正为 src/。
+    若无原始配置则创建标准模板。
+    """
+    patched = False
+    for cfg in ("vite.config.js", "vite.config.ts"):
+        if not os.path.exists(cfg):
+            continue
+        with open(cfg, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_content = content
+        # inputDir 路径修正
+        new_content = new_content.replace("inputDir: '.'",  "inputDir: 'src'")
+        new_content = new_content.replace('inputDir: "."',  'inputDir: "src"')
+        # pages.json 路径修正
+        new_content = new_content.replace("'./pages.json'",    "'./src/pages.json'")
+        new_content = new_content.replace('"./pages.json"',    '"./src/pages.json"')
+        # manifest.json 路径修正
+        new_content = new_content.replace("'./manifest.json'", "'./src/manifest.json'")
+        new_content = new_content.replace('"./manifest.json"', '"./src/manifest.json"')
+
+        with open(cfg, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        if new_content != content:
+            print(f"  [patched] {cfg}（路径已修正为 src/）")
+        else:
+            print(f"  [kept]    {cfg}（无需修改）")
+        patched = True
+        break
+
+    if not patched:
+        with open("vite.config.ts", "w", encoding="utf-8") as f:
+            f.write(VITE_CONFIG)
+        print("  [created] vite.config.ts（标准模板）")
 
 
 def create_npmrc():
@@ -146,7 +171,6 @@ def update_package_json():
 
     for k, v in CLI_EXTRA_DEPS.items():
         deps.setdefault(k, v)
-
     for k, v in CLI_EXTRA_DEV_DEPS.items():
         dev_deps.setdefault(k, v)
 
@@ -157,8 +181,6 @@ def update_package_json():
         json.dump(pkg, f, ensure_ascii=False, indent=2)
     print("  [updated] package.json")
 
-    # sheep/config/index.js 等源码用相对路径引用 ../../package.json
-    # 迁移到 src/ 后多一层目录，需在 src/ 下放一份副本
     src_pkg_path = os.path.join("src", "package.json")
     if os.path.exists("src"):
         shutil.copy2(pkg_path, src_pkg_path)
@@ -185,7 +207,7 @@ def main():
     print("🔄 开始 HBuilderX → CLI 项目转换...")
     move_to_src()
     fix_index_html()
-    create_vite_config()
+    create_vite_config()   # 保留原始配置，只修正路径
     create_npmrc()
     update_package_json()
     verify_src_manifest()
