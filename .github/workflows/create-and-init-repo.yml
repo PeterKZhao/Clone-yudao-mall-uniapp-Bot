@@ -49,6 +49,7 @@ jobs:
               -H "Authorization: Bearer ${GH_PAT}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${OWNER}/${NEW_REPO}"
+            echo "🗑️ 已删除旧仓库，等待 3s..."
             sleep 3
           fi
 
@@ -61,7 +62,7 @@ jobs:
 
           rm -rf source/.git source/.gitee source/.github \
                  source/README.md source/README-zh_CN.md
-                 
+
       - name: Convert HBuilderX project to CLI
         shell: bash
         run: |
