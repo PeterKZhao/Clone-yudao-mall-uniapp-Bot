@@ -5,7 +5,6 @@
 """
 import os, json, shutil
 
-# HBuilderX 项目中属于"业务源码"的文件/目录 → 移入 src/
 SRC_ITEMS = [
     "pages", "components", "static", "store", "stores",
     "utils", "api", "hooks", "types", "assets", "locale",
@@ -26,8 +25,6 @@ CLI_SCRIPTS = {
     "build:app-plus":  "uni build -p app-plus",
 }
 
-# CI 安装前会动态解析真实版本，这里用 * 占位
-# 真实版本格式: 3.0.0-3090820231023001（由 pages.yml/build-uniapp.yml 动态注入）
 CLI_DEPS = {
     "@dcloudio/uni-app": "*",
 }
@@ -40,7 +37,7 @@ CLI_DEV_DEPS = {
     "@dcloudio/types":           "*",
     "vite":                      "^5.2.8",
     "typescript":                "^5.2.0",
-    "vue":                       "^3.4.0",
+    "vue":                       "^3.4.0",   # CLI 项目必须显式声明，HBuilderX 由 IDE 内置
 }
 
 VITE_CONFIG = """\
@@ -52,7 +49,6 @@ export default defineConfig({
 })
 """
 
-# pnpm 配置：关闭严格 peer-deps，防止 @dcloudio 包版本冲突
 NPMRC = """\
 strict-peer-dependencies=false
 shamefully-hoist=true
@@ -61,10 +57,10 @@ shamefully-hoist=true
 
 def is_cli_project() -> bool:
     """
-    仅当同时满足以下两个条件时，才判定为已是 CLI 项目：
-    1. 存在 vite.config.ts 或 vite.config.js
+    必须同时满足：
+    1. 有 vite config（vite.config.ts 或 .js）
     2. src/ 下已有 manifest.json 或 pages.json
-    避免"有 vite config 但 src/ 结构未建立"时误判，导致 manifest.json 留在根目录。
+    防止"原项目带 vite.config.js 但文件仍在根目录"时误判跳过迁移。
     """
     has_vite = (
         os.path.exists("vite.config.ts")
@@ -91,10 +87,12 @@ def move_to_src():
 
 
 def create_vite_config():
-    for cfg in ("vite.config.ts", "vite.config.js"):
-        if os.path.exists(cfg):
-            print(f"  [skip]  {cfg}（已存在）")
-            return
+    # 强制删除旧的 vite.config.js/.ts
+    # 原始项目的 vite.config.js 可能指向根目录，与迁移后的 src/ 结构不符
+    for old_cfg in ("vite.config.js", "vite.config.ts"):
+        if os.path.exists(old_cfg):
+            os.remove(old_cfg)
+            print(f"  [removed] {old_cfg}（替换为标准 CLI 配置）")
     with open("vite.config.ts", "w", encoding="utf-8") as f:
         f.write(VITE_CONFIG)
     print("  [created] vite.config.ts")
@@ -115,13 +113,11 @@ def update_package_json():
     else:
         pkg = {"name": "future-mall-uniapp", "version": "1.0.0", "private": True}
 
-    # 仅在缺失时补充 CLI scripts，不覆盖已有脚本
     existing = pkg.get("scripts", {})
     for k, v in CLI_SCRIPTS.items():
         existing.setdefault(k, v)
     pkg["scripts"] = existing
 
-    # 合并依赖（不删除项目已有依赖）
     pkg.setdefault("dependencies", {}).update(CLI_DEPS)
     pkg.setdefault("devDependencies", {}).update(CLI_DEV_DEPS)
 
@@ -150,7 +146,7 @@ def main():
 
     print("🔄 开始 HBuilderX → CLI 项目转换...")
     move_to_src()
-    create_vite_config()
+    create_vite_config()   # 强制覆盖，确保 inputDir 默认指向 src/
     create_npmrc()
     update_package_json()
     verify_src_manifest()
