@@ -40,6 +40,7 @@ CLI_DEV_DEPS = {
     "@dcloudio/types":           "*",
     "vite":                      "^5.2.8",
     "typescript":                "^5.2.0",
+    "vue":                       "^3.4.0",
 }
 
 VITE_CONFIG = """\
