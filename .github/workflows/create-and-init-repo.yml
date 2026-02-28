@@ -61,6 +61,12 @@ jobs:
 
           rm -rf source/.git source/.gitee source/.github \
                  source/README.md source/README-zh_CN.md
+                 
+      - name: Convert HBuilderX project to CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd source && python3 ../tools/convert_hbx_to_cli.py)
 
       - name: Replace text content
         shell: bash
