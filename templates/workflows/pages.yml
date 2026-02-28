@@ -45,8 +45,6 @@ jobs:
         run: |
           npm config set registry https://registry.npmmirror.com
 
-          # npm latest 标签错误指向 2021 年的 alpha 残缺版本
-          # 必须手动查询所有版本，过滤出日期格式的真实可用版本（3.0.0-<13位纯数字>）
           DCLOUDIO_VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
             node -e "
             let raw = '';
@@ -73,7 +71,6 @@ jobs:
 
           echo "📌 @dcloudio resolved: ${DCLOUDIO_VER}"
 
-          # 将 package.json 中所有 @dcloudio/*（types 除外）替换为精确版本
           node -e "
           const fs = require('fs');
           const ver = process.argv[1];
@@ -127,7 +124,45 @@ jobs:
           " "${MANIFEST_PATH}" "${REPO_NAME}"
 
       - name: Build H5
-        run: pnpm build:h5
+        id: build
+        continue-on-error: true          # 构建失败不立即中止，先收集日志
+        run: |
+          pnpm build:h5 2>&1 | tee build.log
+          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Collect project structure on failure
+        if: steps.build.outcome == 'failure'
+        run: |
+          mkdir -p build-logs
+          mv build.log build-logs/build.log
+
+          echo "===== package.json =====" >> build-logs/build.log
+          cat package.json               >> build-logs/build.log
+
+          echo "===== src/ tree ======"  >> build-logs/build.log
+          find src -maxdepth 3 -not -path '*/node_modules/*' \
+            | sort                       >> build-logs/build.log
+
+          echo "===== vite.config =====" >> build-logs/build.log
+          cat vite.config.ts 2>/dev/null || cat vite.config.js 2>/dev/null \
+                                         >> build-logs/build.log || true
+
+          echo "===== src/manifest.json =====" >> build-logs/build.log
+          cat src/manifest.json 2>/dev/null    >> build-logs/build.log || true
+
+      - name: Upload build logs
+        if: steps.build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.sha }}
+          path: build-logs/
+          retention-days: 7             # 保留 7 天，到期自动删除
+
+      - name: Fail job after log upload
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "❌ Build failed. 请下载上方 Artifacts 中的 build-logs 查看完整日志。"
+          exit 1
 
       - name: Verify dist
         run: |
