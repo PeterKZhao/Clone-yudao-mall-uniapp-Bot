@@ -1,0 +1,392 @@
+name: Build Mini Program / Android / iOS
+
+on:
+  push:
+    branches: [master]   # push 只自动触发小程序
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "编译平台"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - mp-weixin
+          - android
+          - ios
+
+# ─────────────────────────────────────────────────────────
+# Job 0: 解析最新 @dcloudio 版本（输出给下游 Job 复用）
+# ─────────────────────────────────────────────────────────
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      dcloudio_ver: ${{ steps.resolve.outputs.ver }}
+    steps:
+      - name: Resolve @dcloudio version
+        id: resolve
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          VER=$(npm view @dcloudio/vite-plugin-uni versions --json 2>/dev/null | \
+            node -e "
+            let raw='';
+            process.stdin.on('data',d=>raw+=d);
+            process.stdin.on('end',()=>{
+              try{
+                const vs=JSON.parse(raw);
+                const dated=vs.filter(v=>/^3\.0\.0-\d{13,}$/.test(v));
+                if(dated.length){
+                  dated.sort((a,b)=>{
+                    const na=BigInt(a.split('-')[1]);
+                    const nb=BigInt(b.split('-')[1]);
+                    return na<nb?-1:na>nb?1:0;
+                  });
+                  console.log(dated[dated.length-1]);
+                }else{console.log('3.0.0-3090820231023001');}
+              }catch(e){console.log('3.0.0-3090820231023001');}
+            });" || echo "3.0.0-3090820231023001")
+          echo "ver=${VER}" >> $GITHUB_OUTPUT
+          echo "📌 @dcloudio resolved: ${VER}"
+
+# ─────────────────────────────────────────────────────────
+# 公共安装步骤（YAML anchor，各 Job 引用）
+# ─────────────────────────────────────────────────────────
+# 注意：GitHub Actions 不支持顶层 anchor，
+#       下方三个 Job 的安装步骤写法一致，各自独立展开。
+
+# ─────────────────────────────────────────────────────────
+# Job 1: 微信小程序
+# 触发：push to master ＋ workflow_dispatch (all / mp-weixin)
+# 产物：dist/build/mp-weixin/  → Artifact: mp-weixin-<sha>
+# ─────────────────────────────────────────────────────────
+  build-mp-weixin:
+    needs: resolve-version
+    if: |
+      github.event_name == 'push' ||
+      github.event.inputs.platforms == 'all' ||
+      github.event.inputs.platforms == 'mp-weixin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Cache pnpm
+        uses: actions/cache@v4
+        with:
+          path: $(pnpm store path --silent)
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Pin @dcloudio & install
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          node -e "
+          const fs=require('fs'),ver=process.argv[1];
+          const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
+          ['dependencies','devDependencies'].forEach(k=>{
+            if(!pkg[k]) return;
+            Object.keys(pkg[k]).forEach(n=>{
+              if(n.startsWith('@dcloudio/') && n!=='@dcloudio/types')
+                pkg[k][n]=ver;
+            });
+          });
+          fs.writeFileSync('package.json',JSON.stringify(pkg,null,2));
+          console.log('✅ @dcloudio pinned:',ver);
+          " "${{ needs.resolve-version.outputs.dcloudio_ver }}"
+          pnpm install --no-frozen-lockfile
+
+      - name: Build MP-WeChat
+        id: build
+        continue-on-error: true
+        run: pnpm build:mp-weixin 2>&1 | tee build-mp.log; exit ${PIPESTATUS[0]}
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mp-weixin-logs-${{ github.sha }}
+          path: build-mp.log
+          retention-days: 7
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "❌ MP-WeChat build failed，查看 Artifact: mp-weixin-logs-${{ github.sha }}"
+          exit 1
+
+      - name: Upload MP-WeChat dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: mp-weixin-${{ github.sha }}
+          path: dist/build/mp-weixin/
+          retention-days: 14
+
+# ─────────────────────────────────────────────────────────
+# Job 2: Android APK
+# 触发：workflow_dispatch (all / android)
+#
+# 前置条件（需手动完成一次，之后全自动）：
+#   1. 用 HBuilderX 生成原生 Android 工程，放入仓库 native/android/
+#   2. 在 GitHub Secrets 中配置：
+#      KEYSTORE_BASE64      — base64(your.keystore)
+#      KEYSTORE_STORE_PASS  — keystore 密码
+#      KEYSTORE_KEY_ALIAS   — key alias
+#      KEYSTORE_KEY_PASS    — key 密码
+# ─────────────────────────────────────────────────────────
+  build-android:
+    needs: resolve-version
+    if: |
+      github.event.inputs.platforms == 'all' ||
+      github.event.inputs.platforms == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Cache pnpm
+        uses: actions/cache@v4
+        with:
+          path: $(pnpm store path --silent)
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('native/android/**/*.gradle*', 'native/android/**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Pin @dcloudio & install
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          node -e "
+          const fs=require('fs'),ver=process.argv[1];
+          const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
+          ['dependencies','devDependencies'].forEach(k=>{
+            if(!pkg[k]) return;
+            Object.keys(pkg[k]).forEach(n=>{
+              if(n.startsWith('@dcloudio/') && n!=='@dcloudio/types')
+                pkg[k][n]=ver;
+            });
+          });
+          fs.writeFileSync('package.json',JSON.stringify(pkg,null,2));
+          " "${{ needs.resolve-version.outputs.dcloudio_ver }}"
+          pnpm install --no-frozen-lockfile
+
+      - name: Build app-plus (JS 层)
+        run: pnpm build:app-plus 2>&1 | tee build-app.log; exit ${PIPESTATUS[0]}
+
+      - name: Copy web assets → Android project
+        run: |
+          APPID=$(node -e "
+            const m=require('./src/manifest.json');
+            console.log(m.appid||m.id||'HBuilder');
+          ")
+          DEST="native/android/app/src/main/assets/apps/${APPID}/www"
+          mkdir -p "${DEST}"
+          cp -a dist/build/app-plus/. "${DEST}/"
+          echo "✅ web assets → ${DEST}"
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/release.keystore
+
+      - name: Build release APK
+        working-directory: native/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.keystore" \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_STORE_PASS }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEYSTORE_KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEYSTORE_KEY_PASS }}" \
+            --no-daemon 2>&1 | tee ../../build-gradle.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ github.sha }}
+          path: native/android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-logs-${{ github.sha }}
+          path: |
+            build-app.log
+            build-gradle.log
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────
+# Job 3: iOS IPA
+# 触发：workflow_dispatch (all / ios)
+#
+# 前置条件（需手动完成一次，之后全自动）：
+#   1. 用 HBuilderX 生成原生 iOS 工程，放入仓库 native/ios/
+#   2. 在 GitHub Secrets 中配置：
+#      IOS_CERTIFICATE_BASE64      — base64(Certificates.p12)
+#      IOS_CERTIFICATE_PASSWORD    — p12 导出密码
+#      IOS_PROVISIONING_PROFILE_BASE64 — base64(.mobileprovision)
+#      IOS_TEAM_ID                 — Apple Team ID (10位)
+#   3. 修改下方 xcodebuild 中的 -scheme / -project 路径
+# ─────────────────────────────────────────────────────────
+  build-ios:
+    needs: resolve-version
+    if: |
+      github.event.inputs.platforms == 'all' ||
+      github.event.inputs.platforms == 'ios'
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Cache pnpm
+        uses: actions/cache@v4
+        with:
+          path: $(pnpm store path --silent)
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Pin @dcloudio & install
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          node -e "
+          const fs=require('fs'),ver=process.argv[1];
+          const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
+          ['dependencies','devDependencies'].forEach(k=>{
+            if(!pkg[k]) return;
+            Object.keys(pkg[k]).forEach(n=>{
+              if(n.startsWith('@dcloudio/') && n!=='@dcloudio/types')
+                pkg[k][n]=ver;
+            });
+          });
+          fs.writeFileSync('package.json',JSON.stringify(pkg,null,2));
+          " "${{ needs.resolve-version.outputs.dcloudio_ver }}"
+          pnpm install --no-frozen-lockfile
+
+      - name: Build app-plus (JS 层)
+        run: pnpm build:app-plus 2>&1 | tee build-app-ios.log; exit ${PIPESTATUS[0]}
+
+      - name: Copy web assets → iOS project
+        run: |
+          APPID=$(node -e "
+            const m=require('./src/manifest.json');
+            console.log(m.appid||m.id||'HBuilder');
+          ")
+          DEST="native/ios/HBuilder/HBuilder/Pandora/apps/${APPID}/www"
+          mkdir -p "${DEST}"
+          cp -a dist/build/app-plus/. "${DEST}/"
+          echo "✅ web assets → ${DEST}"
+
+      - name: Install certificate & provisioning profile
+        env:
+          CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          CERT_PWD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PP_B64:   ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app.keychain-db"
+          KEYCHAIN_PWD="tmp-$(date +%s)"
+
+          security create-keychain -p "${KEYCHAIN_PWD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PWD}" "${KEYCHAIN_PATH}"
+
+          echo "${CERT_B64}" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -P "${CERT_PWD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}"
+
+          PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          echo "${PP_B64}" | base64 --decode > "${PP_PATH}"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(security cms -D -i "${PP_PATH}" | plutil -extract UUID raw -)
+          cp "${PP_PATH}" \
+            ~/Library/MobileDevice/Provisioning\ Profiles/"${UUID}".mobileprovision
+          echo "✅ Provisioning Profile UUID: ${UUID}"
+
+      - name: Xcode Archive
+        run: |
+          # ⚠️ 按实际工程路径修改 -project 和 -scheme
+          xcodebuild archive \
+            -project native/ios/HBuilder/HBuilder.xcodeproj \
+            -scheme   HBuilder \
+            -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.IOS_TEAM_ID }}" \
+            -allowProvisioningUpdates \
+            | xcpretty || true
+
+      - name: Export IPA
+        run: |
+          cat > "$RUNNER_TEMP/export-options.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>compileBitcode</key><false/>
+          </dict></plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/export-options.plist" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            | xcpretty || true
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-${{ github.sha }}
+          path: ${{ runner.temp }}/ipa/*.ipa
+          retention-days: 14
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-logs-${{ github.sha }}
+          path: build-app-ios.log
+          retention-days: 7
