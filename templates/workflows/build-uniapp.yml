@@ -10,9 +10,6 @@ on:
         required: false
         default: "android,mp-weixin"
 
-# ─────────────────────────────────────────────────────────────
-# 公共环境变量（在各 job 中引用）
-# ─────────────────────────────────────────────────────────────
 env:
   NODE_VERSION: '18'
   PNPM_VERSION: 'latest'
@@ -20,7 +17,6 @@ env:
 jobs:
   # ═══════════════════════════════════════════════════════════
   # JOB 1 ▸ 微信小程序
-  # 产出：unpackage/dist/build/mp-weixin（zip 打包）
   # ═══════════════════════════════════════════════════════════
   build-mp-weixin:
     name: 微信小程序
@@ -28,21 +24,17 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - name: Cache pnpm store
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.pnpm-store
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -56,23 +48,16 @@ jobs:
       - name: Build WeChat Mini Program
         run: pnpm build:mp-weixin
 
-      - name: Verify output
+      - name: Verify & package output
         run: |
           if [ ! -d "unpackage/dist/build/mp-weixin" ]; then
-            echo "❌ mp-weixin 构建目录未找到"
-            exit 1
+            echo "❌ mp-weixin 构建目录未找到"; exit 1
           fi
-          echo "✅ mp-weixin 构建成功"
-          ls -lh unpackage/dist/build/mp-weixin/
-
-      - name: Package mp-weixin output
-        run: |
           cd unpackage/dist/build
           zip -r ../../../mp-weixin-${{ github.sha }}.zip mp-weixin/
-          echo "📦 打包完成: mp-weixin-${{ github.sha }}.zip"
+          echo "✅ 打包完成"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: mp-weixin-${{ github.sha }}
           path: mp-weixin-${{ github.sha }}.zip
@@ -80,37 +65,38 @@ jobs:
 
   # ═══════════════════════════════════════════════════════════
   # JOB 2 ▸ Android APK
-  # 产出：
-  #   - app 资源包（无论是否配置 SDK 都会输出）
-  #   - APK（需配置 DCLOUD_ANDROID_SDK_URL + ANDROID_KEYSTORE_* secrets）
   # ═══════════════════════════════════════════════════════════
   build-android:
     name: Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # ✅ 关键修复：secrets → job 级别 env，if: 里用 env.XXX
+    env:
+      DCLOUD_ANDROID_SDK_URL: ${{ secrets.DCLOUD_ANDROID_SDK_URL }}
+      DCLOUD_APPKEY:          ${{ secrets.DCLOUD_APPKEY }}
+      ANDROID_KEYSTORE_BASE64:  ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS:      ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD:   ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - name: Cache pnpm store
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.pnpm-store
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -127,58 +113,50 @@ jobs:
       - name: Verify app resources
         run: |
           if [ ! -d "unpackage/dist/build/app" ]; then
-            echo "❌ app 构建目录未找到"
-            exit 1
+            echo "❌ app 构建目录未找到"; exit 1
           fi
           echo "✅ App 资源构建成功"
-          ls -lh unpackage/dist/build/app/
 
-      # ── 以下步骤需要配置 secret: DCLOUD_ANDROID_SDK_URL ──────────────────
-      # 请提前将 DCloud Android 离线打包 SDK（zip）上传到可访问的 URL
-      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/android.html
-      # 建议存储在: GitHub Release Assets / 阿里云 OSS / 腾讯云 COS
-      # ──────────────────────────────────────────────────────────────────────
+      # 始终上传 app 资源，可在本地用 HBuilderX 离线打包
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-resources-${{ github.sha }}
+          path: unpackage/dist/build/app/
+          retention-days: 7
+
       - name: Download DCloud Android offline SDK
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
-          set -euo pipefail
-          echo "⬇️ 下载 DCloud Android 离线打包 SDK..."
-          curl -L -o android-sdk.zip "${{ secrets.DCLOUD_ANDROID_SDK_URL }}"
+          echo "⬇️ 下载 Android 离线 SDK..."
+          curl -L -o android-sdk.zip "${{ env.DCLOUD_ANDROID_SDK_URL }}"
           unzip -q android-sdk.zip -d android-sdk
           echo "✅ SDK 解压完成"
-          ls android-sdk/
 
-      - name: Configure AppKey and copy app resources
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
-        env:
-          DCLOUD_APPKEY: ${{ secrets.DCLOUD_APPKEY }}
+      - name: Configure AppKey & copy app resources
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
-          set -euo pipefail
-
-          # 读取 manifest.json 中的 appid（__UNI__XXXXXXX 格式）
-          APP_ID=$(cat manifest.json | python3 -c "
+          APP_ID=$(python3 -c "
           import json,sys
-          d=json.load(sys.stdin)
+          d=json.load(open('manifest.json'))
           print(d.get('appid','__UNI__APPID'))
           ")
           echo "🆔 AppID: ${APP_ID}"
-
-          # DCloud Android SDK 模板项目路径（根据下载 SDK 的实际目录结构调整）
           SIMPLEDEMOSRC="android-sdk/HBuilder-Integrate-AS/simpleDemo/src/main"
           WWW_DIR="${SIMPLEDEMOSRC}/assets/apps/${APP_ID}/www"
           mkdir -p "${WWW_DIR}"
           cp -r unpackage/dist/build/app/. "${WWW_DIR}/"
-          echo "✅ App 资源已复制到: ${WWW_DIR}"
+          CTRL="${SIMPLEDEMOSRC}/assets/data/dcloud_control.xml"
+          [ -f "${CTRL}" ] && sed -i "s/__APPKEY__/${{ env.DCLOUD_APPKEY }}/g" "${CTRL}"
 
-          # 写入 AppKey（替换 dcloud_appkey 占位符）
-          MANIFEST_SRC="${SIMPLEDEMOSRC}/assets/data/dcloud_control.xml"
-          if [ -f "${MANIFEST_SRC}" ]; then
-            sed -i "s/__APPKEY__/${DCLOUD_APPKEY}/g" "${MANIFEST_SRC}"
-          fi
+      - name: Setup signing keystore
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ env.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode \
+            > android-sdk/HBuilder-Integrate-AS/simpleDemo/release.keystore
+          echo "✅ Keystore 就绪"
 
-      - name: Cache Gradle
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         with:
           path: |
             ~/.gradle/caches
@@ -186,83 +164,61 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('android-sdk/**/*.gradle*') }}
           restore-keys: ${{ runner.os }}-gradle-
 
-      - name: Setup signing keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: Build APK
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
-          echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > android-sdk/HBuilder-Integrate-AS/simpleDemo/release.keystore
-          echo "✅ Keystore 文件已就绪"
-
-      - name: Build APK (release)
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
-        env:
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        run: |
-          set -euo pipefail
           cd android-sdk/HBuilder-Integrate-AS
           chmod +x gradlew
           ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file="$(pwd)/simpleDemo/release.keystore" \
-            -Pandroid.injected.signing.store.password="${STORE_PASSWORD}" \
-            -Pandroid.injected.signing.key.alias="${KEY_ALIAS}" \
-            -Pandroid.injected.signing.key.password="${KEY_PASSWORD}" \
+            -Pandroid.injected.signing.store.password="${{ env.ANDROID_STORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ env.ANDROID_KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ env.ANDROID_KEY_PASSWORD }}" \
             --no-daemon
           echo "✅ APK 构建完成"
 
-      - name: Collect APK
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
+      - name: Collect & upload APK
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
           mkdir -p apk-output
           find android-sdk -name "*.apk" -not -path "*/intermediates/*" \
             -exec cp {} apk-output/ \;
-          ls -lh apk-output/
 
-      - name: Upload APK artifact
-        if: ${{ secrets.DCLOUD_ANDROID_SDK_URL != '' }}
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         with:
           name: android-apk-${{ github.sha }}
           path: apk-output/*.apk
           retention-days: 7
 
-      # 无论是否有 SDK，始终上传 app 资源（可用于本地离线打包）
-      - name: Upload app resources artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-resources-${{ github.sha }}
-          path: unpackage/dist/build/app/
-          retention-days: 7
-
   # ═══════════════════════════════════════════════════════════
   # JOB 3 ▸ iOS IPA
-  # 产出：
-  #   - app 资源包（始终输出）
-  #   - IPA（需配置 DCLOUD_IOS_SDK_URL + IOS_* secrets）
   # ═══════════════════════════════════════════════════════════
   build-ios:
     name: iOS IPA
     runs-on: macos-latest
     timeout-minutes: 60
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # ✅ 关键修复：secrets → job 级别 env
+    env:
+      DCLOUD_IOS_SDK_URL:         ${{ secrets.DCLOUD_IOS_SDK_URL }}
+      DCLOUD_APPKEY:              ${{ secrets.DCLOUD_APPKEY }}
+      IOS_CERTIFICATE_BASE64:     ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD:   ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_PROVISION_BASE64:       ${{ secrets.IOS_PROVISION_BASE64 }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - name: Cache pnpm store
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.pnpm-store
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -276,110 +232,75 @@ jobs:
       - name: Build App resources
         run: pnpm build:app
 
-      - name: Verify app resources
-        run: |
-          if [ ! -d "unpackage/dist/build/app" ]; then
-            echo "❌ app 构建目录未找到"
-            exit 1
-          fi
-          echo "✅ App 资源构建成功"
+      # 始终上传 app 资源
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-resources-ios-${{ github.sha }}
+          path: unpackage/dist/build/app/
+          retention-days: 7
 
-      # ── 以下步骤需要配置相关 secrets ─────────────────────────────────────
-      # DCLOUD_IOS_SDK_URL    : DCloud iOS 离线打包 SDK zip 下载链接
-      # IOS_CERTIFICATE_BASE64: .p12 证书的 base64 编码
-      # IOS_CERTIFICATE_PASSWORD: .p12 证书密码
-      # IOS_PROVISION_BASE64  : .mobileprovision 文件的 base64 编码
-      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/ios.html
-      # ──────────────────────────────────────────────────────────────────────
       - name: Download DCloud iOS offline SDK
-        if: ${{ secrets.DCLOUD_IOS_SDK_URL != '' }}
+        if: ${{ env.DCLOUD_IOS_SDK_URL != '' }}
         run: |
-          echo "⬇️ 下载 DCloud iOS 离线打包 SDK..."
-          curl -L -o ios-sdk.zip "${{ secrets.DCLOUD_IOS_SDK_URL }}"
+          curl -L -o ios-sdk.zip "${{ env.DCLOUD_IOS_SDK_URL }}"
           unzip -q ios-sdk.zip -d ios-sdk
           echo "✅ iOS SDK 解压完成"
 
       - name: Copy app resources to iOS project
-        if: ${{ secrets.DCLOUD_IOS_SDK_URL != '' }}
+        if: ${{ env.DCLOUD_IOS_SDK_URL != '' }}
         run: |
-          APP_ID=$(cat manifest.json | python3 -c "
+          APP_ID=$(python3 -c "
           import json,sys
-          d=json.load(sys.stdin)
+          d=json.load(open('manifest.json'))
           print(d.get('appid','__UNI__APPID'))
           ")
-          echo "🆔 AppID: ${APP_ID}"
-
-          # DCloud iOS SDK 模板路径（根据实际 SDK 目录结构调整）
           IOS_WWW="ios-sdk/HBuilder-Hello/HBuilder-Hello/Pandora/apps/${APP_ID}/www"
           mkdir -p "${IOS_WWW}"
           cp -r unpackage/dist/build/app/. "${IOS_WWW}/"
-          echo "✅ App 资源已复制到 iOS 项目"
+          echo "✅ App 资源已复制"
 
-      - name: Import signing certificate & provisioning profile
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
-        env:
-          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
-          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}
+      - name: Import certificate & provisioning profile
+        if: ${{ env.IOS_CERTIFICATE_BASE64 != '' }}
         run: |
           CERT_PATH=$RUNNER_TEMP/cert.p12
           PP_PATH=$RUNNER_TEMP/profile.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app.keychain-db
 
-          echo -n "$IOS_CERTIFICATE_BASE64"  | base64 --decode -o "$CERT_PATH"
-          echo -n "$IOS_PROVISION_BASE64"    | base64 --decode -o "$PP_PATH"
+          echo -n "${{ env.IOS_CERTIFICATE_BASE64 }}"  | base64 --decode -o "$CERT_PATH"
+          echo -n "${{ env.IOS_PROVISION_BASE64 }}"    | base64 --decode -o "$PP_PATH"
 
           security create-keychain -p "ci_keychain_pwd" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "ci_keychain_pwd" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$IOS_CERTIFICATE_PASSWORD" \
+          security import "$CERT_PATH" -P "${{ env.IOS_CERTIFICATE_PASSWORD }}" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
-
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
-          echo "✅ 证书和描述文件导入完成"
+          echo "✅ 证书导入完成"
 
-      - name: Build & archive with xcodebuild
-        if: ${{ secrets.DCLOUD_IOS_SDK_URL != '' && secrets.IOS_CERTIFICATE_BASE64 != '' }}
+      - name: Build & archive
+        if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
         run: |
-          set -euo pipefail
           cd ios-sdk/HBuilder-Hello
-
           xcodebuild \
             -project HBuilder-Hello.xcodeproj \
             -scheme HBuilder-Hello \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
-            archive | xcpretty || xcodebuild \
-              -project HBuilder-Hello.xcodeproj \
-              -scheme HBuilder-Hello \
-              -configuration Release \
-              -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
-              archive
+            archive
 
       - name: Export IPA
-        if: ${{ secrets.DCLOUD_IOS_SDK_URL != '' && secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
         run: |
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
             -exportOptionsPlist "ios-sdk/HBuilder-Hello/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/ipa"
-          echo "✅ IPA 导出成功"
-          ls -lh "$RUNNER_TEMP/ipa/"
 
-      - name: Upload IPA artifact
-        if: ${{ secrets.DCLOUD_IOS_SDK_URL != '' && secrets.IOS_CERTIFICATE_BASE64 != '' }}
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
         with:
           name: ios-ipa-${{ github.sha }}
           path: ${{ runner.temp }}/ipa/*.ipa
-          retention-days: 7
-
-      # 始终上传 app 资源
-      - name: Upload app resources artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-resources-ios-${{ github.sha }}
-          path: unpackage/dist/build/app/
           retention-days: 7
