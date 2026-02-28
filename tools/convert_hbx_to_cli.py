@@ -59,11 +59,21 @@ shamefully-hoist=true
 
 
 def is_cli_project() -> bool:
-    return (
+    """
+    仅当同时满足以下两个条件时，才判定为已是 CLI 项目：
+    1. 存在 vite.config.ts 或 vite.config.js
+    2. src/ 下已有 manifest.json 或 pages.json
+    避免"有 vite config 但 src/ 结构未建立"时误判，导致 manifest.json 留在根目录。
+    """
+    has_vite = (
         os.path.exists("vite.config.ts")
         or os.path.exists("vite.config.js")
+    )
+    has_src = (
+        os.path.exists("src/manifest.json")
         or os.path.exists("src/pages.json")
     )
+    return has_vite and has_src
 
 
 def move_to_src():
@@ -119,11 +129,22 @@ def update_package_json():
     print("  [updated] package.json")
 
 
+def verify_src_manifest():
+    """转换完成后校验 src/manifest.json 必须存在，否则终止。"""
+    if not os.path.exists("src/manifest.json"):
+        raise FileNotFoundError(
+            "❌ 转换后 src/manifest.json 仍不存在！"
+            "请检查源项目中是否包含 manifest.json。"
+        )
+    print("  [verified] src/manifest.json ✅")
+
+
 def main():
     if is_cli_project():
         print("✅ 已是 CLI 项目，跳过文件迁移，仅补充 scripts/依赖...")
         update_package_json()
         create_npmrc()
+        verify_src_manifest()
         return
 
     print("🔄 开始 HBuilderX → CLI 项目转换...")
@@ -131,6 +152,7 @@ def main():
     create_vite_config()
     create_npmrc()
     update_package_json()
+    verify_src_manifest()
     print("✅ 转换完成！源码已迁移至 src/")
 
 
