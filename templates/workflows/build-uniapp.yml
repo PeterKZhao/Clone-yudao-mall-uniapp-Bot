@@ -50,12 +50,13 @@ jobs:
 
       - name: Verify & package output
         run: |
-          if [ ! -d "unpackage/dist/build/mp-weixin" ]; then
-            echo "❌ mp-weixin 构建目录未找到"; exit 1
+          if [ ! -d "dist/build/mp-weixin" ]; then
+            echo "❌ dist/build/mp-weixin 未找到"; exit 1
           fi
-          cd unpackage/dist/build
-          zip -r ../../../mp-weixin-${{ github.sha }}.zip mp-weixin/
-          echo "✅ 打包完成"
+          echo "✅ 微信小程序构建成功"
+          ls -lh dist/build/mp-weixin/
+          cd dist/build
+          zip -r ../../mp-weixin-${{ github.sha }}.zip mp-weixin/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -71,14 +72,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # ✅ 关键修复：secrets → job 级别 env，if: 里用 env.XXX
     env:
-      DCLOUD_ANDROID_SDK_URL: ${{ secrets.DCLOUD_ANDROID_SDK_URL }}
-      DCLOUD_APPKEY:          ${{ secrets.DCLOUD_APPKEY }}
-      ANDROID_KEYSTORE_BASE64:  ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEY_ALIAS:      ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD:   ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      DCLOUD_ANDROID_SDK_URL:  ${{ secrets.DCLOUD_ANDROID_SDK_URL }}
+      DCLOUD_APPKEY:           ${{ secrets.DCLOUD_APPKEY }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS:       ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD:    ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD:  ${{ secrets.ANDROID_STORE_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -112,18 +112,23 @@ jobs:
 
       - name: Verify app resources
         run: |
-          if [ ! -d "unpackage/dist/build/app" ]; then
-            echo "❌ app 构建目录未找到"; exit 1
+          if [ ! -d "dist/build/app" ]; then
+            echo "❌ dist/build/app 未找到"; exit 1
           fi
           echo "✅ App 资源构建成功"
+          ls -lh dist/build/app/
 
-      # 始终上传 app 资源，可在本地用 HBuilderX 离线打包
+      # 无论是否配置离线 SDK，始终上传 app 资源供本地 HBuilderX 离线打包使用
       - uses: actions/upload-artifact@v4
         with:
           name: app-resources-${{ github.sha }}
-          path: unpackage/dist/build/app/
+          path: dist/build/app/
           retention-days: 7
 
+      # ── 以下步骤需配置 secret: DCLOUD_ANDROID_SDK_URL ───────────────────────
+      # 请将 DCloud Android 离线打包 SDK zip 上传到可访问的 URL 后配置该 secret
+      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/android.html
+      # ────────────────────────────────────────────────────────────────────────
       - name: Download DCloud Android offline SDK
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
@@ -131,20 +136,24 @@ jobs:
           curl -L -o android-sdk.zip "${{ env.DCLOUD_ANDROID_SDK_URL }}"
           unzip -q android-sdk.zip -d android-sdk
           echo "✅ SDK 解压完成"
+          ls android-sdk/
 
       - name: Configure AppKey & copy app resources
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
           APP_ID=$(python3 -c "
-          import json,sys
-          d=json.load(open('manifest.json'))
-          print(d.get('appid','__UNI__APPID'))
+          import json
+          d = json.load(open('src/manifest.json') if __import__('os').path.exists('src/manifest.json') else open('manifest.json'))
+          print(d.get('appid', '__UNI__APPID'))
           ")
           echo "🆔 AppID: ${APP_ID}"
+
           SIMPLEDEMOSRC="android-sdk/HBuilder-Integrate-AS/simpleDemo/src/main"
           WWW_DIR="${SIMPLEDEMOSRC}/assets/apps/${APP_ID}/www"
           mkdir -p "${WWW_DIR}"
-          cp -r unpackage/dist/build/app/. "${WWW_DIR}/"
+          cp -r dist/build/app/. "${WWW_DIR}/"
+          echo "✅ App 资源已复制"
+
           CTRL="${SIMPLEDEMOSRC}/assets/data/dcloud_control.xml"
           [ -f "${CTRL}" ] && sed -i "s/__APPKEY__/${{ env.DCLOUD_APPKEY }}/g" "${CTRL}"
 
@@ -177,12 +186,13 @@ jobs:
             --no-daemon
           echo "✅ APK 构建完成"
 
-      - name: Collect & upload APK
+      - name: Collect APK
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
         run: |
           mkdir -p apk-output
           find android-sdk -name "*.apk" -not -path "*/intermediates/*" \
             -exec cp {} apk-output/ \;
+          ls -lh apk-output/
 
       - uses: actions/upload-artifact@v4
         if: ${{ env.DCLOUD_ANDROID_SDK_URL != '' }}
@@ -199,13 +209,12 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
 
-    # ✅ 关键修复：secrets → job 级别 env
     env:
-      DCLOUD_IOS_SDK_URL:         ${{ secrets.DCLOUD_IOS_SDK_URL }}
-      DCLOUD_APPKEY:              ${{ secrets.DCLOUD_APPKEY }}
-      IOS_CERTIFICATE_BASE64:     ${{ secrets.IOS_CERTIFICATE_BASE64 }}
-      IOS_CERTIFICATE_PASSWORD:   ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-      IOS_PROVISION_BASE64:       ${{ secrets.IOS_PROVISION_BASE64 }}
+      DCLOUD_IOS_SDK_URL:       ${{ secrets.DCLOUD_IOS_SDK_URL }}
+      DCLOUD_APPKEY:            ${{ secrets.DCLOUD_APPKEY }}
+      IOS_CERTIFICATE_BASE64:   ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_PROVISION_BASE64:     ${{ secrets.IOS_PROVISION_BASE64 }}
 
     steps:
       - uses: actions/checkout@v4
@@ -232,13 +241,23 @@ jobs:
       - name: Build App resources
         run: pnpm build:app
 
+      - name: Verify app resources
+        run: |
+          if [ ! -d "dist/build/app" ]; then
+            echo "❌ dist/build/app 未找到"; exit 1
+          fi
+          echo "✅ App 资源构建成功"
+
       # 始终上传 app 资源
       - uses: actions/upload-artifact@v4
         with:
           name: app-resources-ios-${{ github.sha }}
-          path: unpackage/dist/build/app/
+          path: dist/build/app/
           retention-days: 7
 
+      # ── 以下步骤需配置 DCLOUD_IOS_SDK_URL + IOS_* secrets ───────────────────
+      # 下载地址: https://nativesupport.dcloud.net.cn/AppDocs/download/ios.html
+      # ────────────────────────────────────────────────────────────────────────
       - name: Download DCloud iOS offline SDK
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' }}
         run: |
@@ -250,14 +269,17 @@ jobs:
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' }}
         run: |
           APP_ID=$(python3 -c "
-          import json,sys
-          d=json.load(open('manifest.json'))
-          print(d.get('appid','__UNI__APPID'))
+          import json, os
+          p = 'src/manifest.json' if os.path.exists('src/manifest.json') else 'manifest.json'
+          d = json.load(open(p))
+          print(d.get('appid', '__UNI__APPID'))
           ")
+          echo "🆔 AppID: ${APP_ID}"
+
           IOS_WWW="ios-sdk/HBuilder-Hello/HBuilder-Hello/Pandora/apps/${APP_ID}/www"
           mkdir -p "${IOS_WWW}"
-          cp -r unpackage/dist/build/app/. "${IOS_WWW}/"
-          echo "✅ App 资源已复制"
+          cp -r dist/build/app/. "${IOS_WWW}/"
+          echo "✅ App 资源已复制到 iOS 项目"
 
       - name: Import certificate & provisioning profile
         if: ${{ env.IOS_CERTIFICATE_BASE64 != '' }}
@@ -275,9 +297,10 @@ jobs:
           security import "$CERT_PATH" -P "${{ env.IOS_CERTIFICATE_PASSWORD }}" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
+
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
-          echo "✅ 证书导入完成"
+          echo "✅ 证书和描述文件导入完成"
 
       - name: Build & archive
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
@@ -289,6 +312,7 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
             archive
+          echo "✅ Archive 完成"
 
       - name: Export IPA
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
@@ -297,6 +321,8 @@ jobs:
             -archivePath "$RUNNER_TEMP/HBuilder.xcarchive" \
             -exportOptionsPlist "ios-sdk/HBuilder-Hello/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/ipa"
+          echo "✅ IPA 导出完成"
+          ls -lh "$RUNNER_TEMP/ipa/"
 
       - uses: actions/upload-artifact@v4
         if: ${{ env.DCLOUD_IOS_SDK_URL != '' && env.IOS_CERTIFICATE_BASE64 != '' }}
