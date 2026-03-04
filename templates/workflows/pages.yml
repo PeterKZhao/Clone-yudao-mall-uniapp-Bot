@@ -109,25 +109,22 @@ jobs:
             exit 1
           fi
 
-      - name: Set H5 base path in manifest.json
+      - name: Set H5 base path in manifest.json (custom domain)
         shell: bash
         run: |
           set -euo pipefail
-          REPO_NAME=$(basename "$(git remote get-url origin)" .git)
-          echo "📦 repo: ${REPO_NAME}, set h5.router.base=/${REPO_NAME}/"
-
           MANIFEST_PATH="src/manifest.json"
+
           node -e "
           const fs = require('fs');
           const p = process.argv[1];
-          const repoName = process.argv[2];
           const m = JSON.parse(fs.readFileSync(p, 'utf8'));
           m.h5 = m.h5 || {};
           m.h5.router = m.h5.router || {};
-          m.h5.router.base = '/' + repoName + '/';
+          m.h5.router.base = '/';
           fs.writeFileSync(p, JSON.stringify(m, null, 2));
           console.log('✅ h5.router.base =', m.h5.router.base);
-          " "${MANIFEST_PATH}" "${REPO_NAME}"
+          " "${MANIFEST_PATH}"
 
       - name: Build H5
         run: |
