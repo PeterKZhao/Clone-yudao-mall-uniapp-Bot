@@ -70,14 +70,28 @@ def enforce_https(org, repo, token, branch, cname):
         "build_type": "workflow",
         "source": {"branch": branch, "path": "/"},
     }
-    r = gh("PUT", base, token, json=payload)
-    if r.status_code in (200, 204):
-        return
-    if r.status_code == 404 and "certificate does not exist yet" in r.text.lower():
-        print("WARN: certificate not ready; skip enforce_https for now")
-        return
-    raise RuntimeError(f"enforce_https failed: {r.status_code} {r.text}")
 
+    for i in range(1, 31):  # 最多等 10 分钟（30 * 20s）
+        r = gh("PUT", base, token, json=payload)
+        if r.status_code in (200, 204):
+            return
+
+        msg = (r.text or "").lower()
+        cert_not_ready = (
+            r.status_code == 404 and (
+                "certificate does not exist yet" in msg or
+                "certificate has not finished being issued" in msg
+            )
+        )
+        if cert_not_ready:
+            print(f"WARN: certificate not ready yet ({i}/30), sleep 20s...")
+            time.sleep(20)
+            continue
+
+        raise RuntimeError(f"enforce_https failed: {r.status_code} {r.text}")
+
+    print("WARN: cert still not ready; rerun workflow later to enforce https")
+    return
 
 def main():
     p = argparse.ArgumentParser()
