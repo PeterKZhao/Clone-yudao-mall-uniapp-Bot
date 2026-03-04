@@ -1,4 +1,4 @@
-name: Create and init UniApp Mall repo
+name: Create and init UniApp Mall repo (org, Pages + Cloudflare full auto)
 
 on:
   workflow_dispatch:
@@ -15,117 +15,216 @@ on:
         description: "是否创建为私有仓库 (true/false)"
         required: false
         default: "false"
+      default_branch:
+        description: "新仓库默认分支名（main 或 master）"
+        required: false
+        default: "master"
+
+      delete_existing:
+        description: "若同名仓库已存在，是否删除后重建 (true/false)"
+        required: false
+        default: "true"
+      confirm_delete:
+        description: "删除确认（默认已填 DELETE；如不想删把 delete_existing=false）"
+        required: false
+        default: "DELETE"
+
+      custom_domain:
+        description: "Pages 自定义域名（留空则不绑定）"
+        required: false
+        default: "mall.fscitech.net"
+      enforce_https:
+        description: "是否在 Pages 上强制 HTTPS (true/false)"
+        required: false
+        default: "true"
+
+      cloudflare_dns:
+        description: "是否自动在 Cloudflare 写入 CNAME (true/false)"
+        required: false
+        default: "true"
+      cloudflare_proxied:
+        description: "Cloudflare 是否橙云代理 (true/false，建议先 false)"
+        required: false
+        default: "false"
 
 jobs:
   create-and-init:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    defaults:
+      run:
+        shell: bash
+
     env:
-      GH_PAT: ${{ secrets.GH_PAT }}
-      OWNER: PeterKZhao
+      ORG: FutureTechQuant
+
       NEW_REPO: ${{ github.event.inputs.repo_name }}
       REPO_DESC: ${{ github.event.inputs.repo_description }}
       PRIVATE: ${{ github.event.inputs.private }}
+      DEFAULT_BRANCH: ${{ github.event.inputs.default_branch }}
+
+      DELETE_EXISTING: ${{ github.event.inputs.delete_existing }}
+      CONFIRM_DELETE: ${{ github.event.inputs.confirm_delete }}
+
+      CUSTOM_DOMAIN: ${{ github.event.inputs.custom_domain }}
+      ENFORCE_HTTPS: ${{ github.event.inputs.enforce_https }}
+
+      CF_DNS: ${{ github.event.inputs.cloudflare_dns }}
+      CF_PROXIED: ${{ github.event.inputs.cloudflare_proxied }}
+
+      # org secrets
+      CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE }}
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
 
     steps:
       - name: Checkout Clone-Bot
         uses: actions/checkout@v4
 
-      - name: Install Python dependencies
-        run: pip install -q -r tools/requirements.txt
+      - name: Generate GitHub App installation token (org)
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ env.ORG }}
 
-      - name: Delete existing repo if exists
-        shell: bash
+      - name: Export APP_TOKEN
         run: |
           set -euo pipefail
+          echo "APP_TOKEN=${{ steps.app-token.outputs.token }}" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          pip install -q -r tools/requirements.txt
+
+      - name: Delete existing repo if exists (default ON)
+        run: |
+          set -euo pipefail
+
+          if [ "${DELETE_EXISTING}" != "true" ]; then
+            echo "DELETE_EXISTING=false, skip delete"
+            exit 0
+          fi
+
+          if [ "${CONFIRM_DELETE}" != "DELETE" ]; then
+            echo "ERROR: confirm_delete must be DELETE when delete_existing=true"
+            exit 1
+          fi
+
+          REPO_API="https://api.github.com/repos/${ORG}/${NEW_REPO}"
+
           CODE="$(curl -sS -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "Authorization: Bearer ${APP_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${OWNER}/${NEW_REPO}")"
+            "${REPO_API}")"
 
           if [ "${CODE}" = "200" ]; then
+            echo "Repo exists, deleting: ${ORG}/${NEW_REPO}"
             curl -sS -o /dev/null -X DELETE \
-              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Authorization: Bearer ${APP_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${OWNER}/${NEW_REPO}"
-            echo "🗑️ 已删除旧仓库，等待 3s..."
-            sleep 3
+              "${REPO_API}"
+
+            echo "Wait until repo is fully deleted (poll 404)..."
+            for i in {1..30}; do
+              CODE2="$(curl -sS -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${APP_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "${REPO_API}")"
+              if [ "${CODE2}" = "404" ]; then
+                echo "Repo deletion confirmed (404)."
+                break
+              fi
+              echo "Still exists (HTTP ${CODE2}), sleep 2s... (${i}/30)"
+              sleep 2
+            done
+          else
+            echo "Repo not found (HTTP ${CODE}), skip delete"
           fi
 
       - name: Clone from Gitee
-        shell: bash
         run: |
           set -euo pipefail
           git clone -q --depth=1 --single-branch \
             https://gitee.com/yudaocode/yudao-mall-uniapp.git source
 
           rm -rf source/.git source/.gitee source/.github \
-                 source/README.md source/README-zh_CN.md
+                 source/README.md source/README-zh_CN.md || true
 
       - name: Convert HBuilderX project to CLI
-        shell: bash
         run: |
           set -euo pipefail
           (cd source && python3 ../tools/convert_hbx_to_cli.py)
 
       - name: Replace text content
-        shell: bash
         run: |
           set -euo pipefail
           (cd source && python3 ../tools/replace_all.py)
 
-      - name: Copy workflow templates
-        shell: bash
+      - name: Copy workflow templates into new repo
         run: |
           set -euo pipefail
           mkdir -p source/.github/workflows
-          for tpl in templates/workflows/*.yml; do
-            [ -f "$tpl" ] || { echo "ERROR: $tpl not found"; exit 1; }
-            cp -f "$tpl" "source/.github/workflows/$(basename "$tpl")"
-            echo "  ✅ copied: $(basename "$tpl")"
-          done
+
+          cp -f templates/workflows/native-build.yml source/.github/workflows/native-build.yml
+          cp -f templates/workflows/pages.yml       source/.github/workflows/pages.yml
+
+          # 触发分支替换为 DEFAULT_BRANCH
+          sed -i "s/branches: \\[ *master *\\]/branches: [ ${DEFAULT_BRANCH} ]/g" source/.github/workflows/*.yml || true
+          sed -i "s/branches: \\[ *main *\\]/branches: [ ${DEFAULT_BRANCH} ]/g"   source/.github/workflows/*.yml || true
 
       - name: Prepare repo content
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p repo_content
           cp -a source/. repo_content/
           rm -rf source
 
-      - name: Create new GitHub repo
-        shell: bash
+      - name: Create new GitHub repo (org) with retry
         run: |
           set -euo pipefail
 
           PRIVATE_BOOL=$( [ "${PRIVATE}" = "true" ] && echo true || echo false )
 
-          RESP="$(curl -sS \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_PAT}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/user/repos \
-            -d "{
-              \"name\": \"${NEW_REPO}\",
-              \"description\": \"${REPO_DESC}\",
-              \"private\": ${PRIVATE_BOOL}
-            }")"
+          for i in {1..5}; do
+            RESP_FILE="$(mktemp)"
+            HTTP_CODE="$(curl -sS -o "${RESP_FILE}" -w "%{http_code}" \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${APP_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${ORG}/repos" \
+              -d "{
+                \"name\": \"${NEW_REPO}\",
+                \"description\": \"${REPO_DESC}\",
+                \"private\": ${PRIVATE_BOOL}
+              }")"
 
-          if ! echo "${RESP}" | grep -q '"full_name"'; then
-            echo "ERROR: Failed to create repo. Response: ${RESP}"
+            if [ "${HTTP_CODE}" = "201" ]; then
+              echo "Repo created."
+              break
+            fi
+
+            echo "Create repo failed (HTTP ${HTTP_CODE}), retry after 3s... (${i}/5)"
+            cat "${RESP_FILE}" || true
+            sleep 3
+          done
+
+          if [ "${HTTP_CODE}" != "201" ]; then
+            echo "ERROR: Failed to create repo after retries."
             exit 1
           fi
+
           sleep 3
 
-      - name: Push to new repo
-        shell: bash
+      - name: Push to new repo (DEFAULT_BRANCH)
         run: |
           set -euo pipefail
 
           git config --global credential.helper store
-          echo "https://${OWNER}:${GH_PAT}@github.com" > ~/.git-credentials
+          echo "https://x-access-token:${APP_TOKEN}@github.com" > ~/.git-credentials
 
           cd repo_content
           git init -q
@@ -133,54 +232,57 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
           git commit -q -m "Initial commit: 梦开始的地方"
-          git branch -M master
-          git remote add origin "https://github.com/${OWNER}/${NEW_REPO}.git"
-          git push -q -u origin master
+
+          git branch -M "${DEFAULT_BRANCH}"
+          git remote add origin "https://github.com/${ORG}/${NEW_REPO}.git"
+          git push -q -u origin "${DEFAULT_BRANCH}"
 
           rm -f ~/.git-credentials
 
-      - name: Init gh-pages branch & enable GitHub Pages
-        shell: bash
+      - name: Set repository default branch (recommended)
+        run: |
+          set -euo pipefail
+          curl -sS -o /dev/null -w "%{http_code}\n" \
+            -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${APP_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${ORG}/${NEW_REPO}" \
+            -d "{\"default_branch\":\"${DEFAULT_BRANCH}\"}" || true
+
+      - name: Cloudflare upsert CNAME (mall -> org.github.io)
+        if: ${{ github.event.inputs.cloudflare_dns == 'true' && github.event.inputs.custom_domain != '' }}
         run: |
           set -euo pipefail
 
-          git config --global credential.helper store
-          echo "https://${OWNER}:${GH_PAT}@github.com" > ~/.git-credentials
-
-          # 1. 创建孤立 gh-pages 分支并推送占位页
-          #    （GitHub Pages API 要求分支必须先存在）
-          cd repo_content
-
-          git checkout --orphan gh-pages
-          git rm -rf . -q 2>/dev/null || true
-          mkdir -p .
-          echo '<html><body>Deploying, please wait...</body></html>' > index.html
-          git add index.html
-          git commit -q -m "Init gh-pages placeholder"
-          git push -q origin gh-pages
-          git checkout master
-
-          cd ..
-          rm -f ~/.git-credentials
-          echo "✅ gh-pages 占位分支已推送"
-          sleep 3
-
-          # 2. 调用 GitHub API 启用 Pages（源：gh-pages 分支根目录）
-          RESP="$(curl -sS \
-            -X POST \
-            -H "Authorization: Bearer ${GH_PAT}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${OWNER}/${NEW_REPO}/pages" \
-            -d '{"source":{"branch":"gh-pages","path":"/"}}')"
-
-          if echo "${RESP}" | grep -q '"html_url"'; then
-            URL=$(echo "${RESP}" | node -e \
-              "let d='';process.stdin.on('data',c=>d+=c);
-               process.stdin.on('end',()=>console.log(JSON.parse(d).html_url))")
-            echo "✅ GitHub Pages 已启用: ${URL}"
-          elif echo "${RESP}" | grep -qi 'already\|exists'; then
-            echo "✅ GitHub Pages 已经启用，跳过"
-          else
-            echo "⚠️  Pages API 响应（非致命）: ${RESP}"
+          if [ -z "${CF_ZONE_ID}" ] || [ -z "${CF_API_TOKEN}" ]; then
+            echo "ERROR: missing Cloudflare secrets CLOUDFLARE_ZONE / CLOUDFLARE_TOKEN"
+            exit 1
           fi
+
+          python3 tools/cf_upsert_cname.py \
+            --zone-id "${CF_ZONE_ID}" \
+            --token "${CF_API_TOKEN}" \
+            --name "${CUSTOM_DOMAIN}" \
+            --target "${ORG,,}.github.io" \
+            --proxied "${CF_PROXIED}"
+
+      - name: Configure GitHub Pages domain/https (script)
+        if: ${{ github.event.inputs.custom_domain != '' }}
+        run: |
+          set -euo pipefail
+          python3 tools/gh_pages_domain.py \
+            --org "${ORG}" \
+            --repo "${NEW_REPO}" \
+            --branch "${DEFAULT_BRANCH}" \
+            --token "${APP_TOKEN}" \
+            --cname "${CUSTOM_DOMAIN}" \
+            --enforce-https "${ENFORCE_HTTPS}"
+
+      - name: Print URLs
+        run: |
+          set -euo pipefail
+          echo "GitHub Pages (default) URL:"
+          echo "https://${ORG,,}.github.io/${NEW_REPO}/"
+          echo "Custom domain:"
+          echo "https://${CUSTOM_DOMAIN}/"
